@@ -1,0 +1,7 @@
+.env
+venv/
+__pycache__/
+.DS_Store
+day1.py
+openai.py
+weekend1.py
