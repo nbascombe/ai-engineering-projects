@@ -21,19 +21,37 @@ returns a response. The foundation for understanding how LLM API calls work.
 
 ### 2. Tennis Analyst Bot (`tennis_analyst_bot.py`)
 A conversational AI tennis analyst that maintains context across multiple 
-messages and responds within a defined persona.
+messages, responds within a defined persona, and returns structured JSON on 
+every response.
 
 **Concepts covered:**
 - Stateful conversation management with chat sessions
 - System prompts to control model behaviour and personality
-- Input validation and graceful error handling
+- Structured outputs - forcing the model to return a consistent JSON schema
+- JSON validation and schema enforcement with typed field checking
+- Retry on parse failure, fall back to raw text
 - The difference between stateless calls and conversational memory
+
+**Response schema:**
+```json
+{
+    "answer": "string",
+    "players_mentioned": ["array of strings"],
+    "related_topics": ["array of strings"],
+    "is_tennis_related": true
+}
+```
+
+**Why structured outputs matter:**
+At scale, downstream code reads LLM responses - not humans. Free text breaks 
+parsers unpredictably. A consistent schema means reliable parsing, structured 
+logging, and code that can make decisions based on response fields.
 
 ---
 
 ## Technical Progression
 - `basic_chatbot.py` - stateless, single call, no memory
-- `tennis_analyst_bot.py` - stateful, conversational, with error handling
+- `tennis_analyst_bot.py` - stateful, conversational, structured JSON outputs, validated responses
 
 ---
 
