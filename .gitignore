@@ -2,6 +2,8 @@
 venv/
 __pycache__/
 .DS_Store
+chroma_db/
 day1.py
-openai.py
-weekend1.py
+SystemDesign.md
+terminal_prompts.md
+basic_langchain_chatbot.py

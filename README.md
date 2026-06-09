@@ -67,10 +67,31 @@ is to pass the retrieved documents to an LLM as context to generate an answer.
 
 ---
 
+### 4. TennisRulesBot (`rag_chatbot/`)
+A RAG chatbot that answers questions about the 2026 ITF Rules of Tennis.
+Builds on the RAG Foundation to deliver a full pipeline: document loading,
+chunking, embedding, vector storage, and LLM response generation.
+ 
+**Concepts covered:**
+- RAG pipeline end to end - load, chunk, embed, store, retrieve, generate
+- LangChain document loaders and text splitters
+- Persistent vector storage with ChromaDB
+- Retrieval grounding - LLM answers only from retrieved context
+- Rate limit handling with controlled embedding throughput
+- The limits of RAG - retrieval quality depends on source document terminology
+
+**Why this matters:**
+Combines every concept from the previous projects into one working system.
+The LLM is grounded in a real document and will say so when it cannot answer,
+rather than hallucinating.
+
+---
+
 ## Technical Progression
 - `basic_chatbot.py` - stateless, single call, no memory
 - `tennis_analyst_bot.py` - stateful, conversational, structured JSON outputs, validated responses
 - `rag_foundation/` - embeddings, vector storage, semantic search - retrieval layer of a RAG system
+- `rag_chatbot/` - full RAG pipeline with persistent vector store and grounded LLM responses
 
 ---
 
@@ -80,6 +101,7 @@ is to pass the retrieved documents to an LLM as context to generate an answer.
 - google-genai
 - python-dotenv
 - ChromaDB
+- LangChain
 
 ---
 
@@ -111,6 +133,7 @@ GOOGLE_API_KEY=your-key-here
 python basic_chatbot.py
 python tennis_analyst_bot.py
 python -m rag_foundation.rag_foundation
+python -m rag_chatbot.rag_chatbot
 ```
 
 ---
