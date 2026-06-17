@@ -1,15 +1,8 @@
 # TennisRulesBot
 
-A retrieval augmented generation (RAG) chatbot that answers questions about the
-2026 ITF Rules of Tennis. Builds on the embedding and vector storage foundation
-in `rag_foundation/`, adding the full pipeline of document loading, chunking,
-embedding, vector storage, and LLM response generation.
-
-## What it does
-
-Loads the official ITF Rules of Tennis PDF, chunks and embeds it using Gemini,
-stores the vectors in a persistent ChromaDB collection, and answers questions
-grounded in the document. If the answer is not in the document, it says so.
+**Problem:** LLMs hallucinate confidently on precise rules questions - citing plausible but incorrect interpretations of tiebreak scoring, service rules, and fault conditions.
+**Approach:** Full RAG pipeline over the official 2026 ITF Rules of Tennis PDF. Document loaded, chunked at 1200 characters, embedded with Gemini, stored persistently in ChromaDB. LLM instructed to answer only from retrieved context and explicitly say so when the answer isn't there.
+**Outcome:** Answers rules questions grounded in the document; correctly refuses out-of-scope questions ("Where can I play baseball?") in all manual tests. Loads in under a second on subsequent runs - no re-embedding needed.
 
 ## How it works
 
@@ -61,6 +54,12 @@ run. Subsequent runs skip the embed step entirely and load in under a second.
 **Pages skipped: first 6** - the cover, app download page, and contents pages
 add no retrieval value. Skipping them reduces total chunks from 184 to 86.
 
+## What I'd improve
+ 
+- Add a confidence score to surface low-similarity retrievals before passing to the LLM
+- Experiment with smaller chunk sizes (600–800 chars) to improve precision on specific rule numbers
+- Add an eval harness against a set of ground-truth Q&A pairs to measure retrieval accuracy systematically
+
 ## Concepts covered
 
 - RAG pipeline end to end - load, chunk, embed, store, retrieve, generate
@@ -69,6 +68,12 @@ add no retrieval value. Skipping them reduces total chunks from 184 to 86.
 - Retrieval grounding - LLM answers only from retrieved context
 - Rate limit handling with controlled embedding throughput
 - The limits of RAG - retrieval quality depends on source document terminology
+
+## Prerequisites
+
+- A Google Gemini API key - get one at aistudio.google.com
+- Create a `.env` file in the repo root:
+   GOOGLE_API_KEY=your-key-here
 
 ## How to run
 

@@ -1,6 +1,35 @@
 # RAG Foundation
 
-The retrieval layer of a RAG (Retrieval Augmented Generation) system. Takes a question, finds the most semantically relevant documents from a collection, returns them and is ready to be passed to an LLM with context.
+**Problem:** Before building a full RAG (Retrieval Augmented Generation) pipeline, the retrieval step needs to work in isolation - finding the right document from a collection by meaning, not keyword matching.
+**Approach:** Embedded 10 tennis documents using Gemini Embedding 001, stored them in a ChromaDB in-memory collection, and built a query function that returns the top-n most semantically similar documents for any question.
+**Outcome:** Given "Who is the best tennis player on clay?", the system returns the Nadal document first - ahead of Djokovic, Swiatek, and others - purely from vector similarity. Given "What does a tiebreak mean?", it surfaces the tiebreak rules document over all player bios.
+ 
+## How it works
+ 
+```
+Documents → Embed (Gemini) → Store (ChromaDB) → Query → Embed question → Similarity search → Top results
+```
+ 
+The embed step and the storage step are kept separate so the embedding model can be swapped without changing the retrieval logic.
+ 
+## Sample output
+ 
+```
+Question: Who is the best tennis player on clay?
+  Result 1: Rafael Nadal is regarded as the greatest clay court player of all time...
+  Result 2: Iga Swiatek has dominated tennis in the early 2020s...
+ 
+Question: What does a tiebreak mean?
+  Result 1: A tiebreak is played when a set reaches 6-6. The first player to reach 7 points...
+  Result 2: Wimbledon is the oldest tennis tournament in the world...
+```
+ 
+## What I'd improve
+ 
+- Use a persistent ChromaDB client so the collection survives between runs without re-embedding
+- Test retrieval with longer documents to understand how chunk quality affects result ranking
+- Add cosine similarity scores to the output to surface low-confidence retrievals
+
 
 ## What it does
 

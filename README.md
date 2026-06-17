@@ -9,8 +9,9 @@ adding complexity.
 ## Projects
 
 ### 1. Basic Chatbot (`basic_chatbot.py`)
-A simple single-turn chatbot that makes a direct call to the Gemini API and 
-returns a response. The foundation for understanding how LLM API calls work.
+**Problem:** What does a working LLM API call look like.
+**Approach:** Single stateless call to Gemini 2.5 Flash with no session, no prompt engineering, no parsing.
+**Outcome:** A working baseline that confirms the API integration, key management, and response structure - the foundation every subsequent project builds on.
 
 **Concepts covered:**
 - Gemini API integration
@@ -20,9 +21,10 @@ returns a response. The foundation for understanding how LLM API calls work.
 ---
 
 ### 2. Tennis Analyst Bot (`tennis_analyst_bot.py`)
-A conversational AI tennis analyst that maintains context across multiple 
-messages, responds within a defined persona, and returns structured JSON on 
-every response.
+**Problem:** LLM responses are free text by default, which breaks any downstream code that needs to parse or act on them.
+**Approach:** A conversational AI tennis analyst that maintains context across multiple 
+messages, responding within a defined persona. Added a system prompt enforcing a strict JSON schema, typed field validation, and a retry-then-fallback chain for when the model ignores the instruction.
+**Outcome:** Every response reliably returns structured JSON with `answer`, `players_mentioned`, `related_topics`, and `is_tennis_related` fields - parseable without special-casing, and graceful when validation fails.
 
 **Concepts covered:**
 - Stateful conversation management with chat sessions
@@ -50,9 +52,9 @@ logging, and code that can make decisions based on response fields.
 ---
 
 ### 3. RAG Foundation (`rag_foundation/`)
-The retrieval layer of a RAG system. Embeds 10 tennis documents using Gemini,
-stores them in a ChromaDB vector store, and finds the most semantically relevant
-documents for a given question.
+**Problem:** LLMs can only answer from what they were trained on - they have no access to private or updated documents.
+**Approach:** Embedded 10 tennis documents using Gemini Embedding 001, stored them in ChromaDB, and built a retrieval function that finds the most semantically relevant documents for any question.
+**Outcome:** Given "Who is the best tennis player on clay?", the system returns the Nadal document ahead of all others - retrieval by meaning, not keyword matching. This is the component that makes RAG work.
 
 **Concepts covered:**
 - Text embeddings - converting meaning into vectors of numbers
@@ -68,9 +70,9 @@ is to pass the retrieved documents to an LLM as context to generate an answer.
 ---
 
 ### 4. TennisRulesBot (`rag_chatbot/`)
-A RAG chatbot that answers questions about the 2026 ITF Rules of Tennis.
-Builds on the RAG Foundation to deliver a full pipeline: document loading,
-chunking, embedding, vector storage, and LLM response generation.
+**Problem:** LLMs hallucinate confidently when asked about specific rule details they weren't trained on precisely.
+**Approach:** Full RAG (Retrieval Augmented Generation) pipeline over the official 2026 ITF Rules of Tennis PDF. Document loaded, chunked at 1200 chars, embedded, stored persistently in ChromaDB, with the LLM instructed to answer only from retrieved context.
+**Outcome:** Answers rules questions grounded in the document; correctly refuses out-of-scope questions ("Where can I play baseball?") rather than hallucinating. Loads in under a second on subsequent runs via persistent vector store - no re-embedding needed.
  
 **Concepts covered:**
 - RAG pipeline end to end - load, chunk, embed, store, retrieve, generate
@@ -123,12 +125,14 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-4. Create a `.env` file in the root folder
+4. Create a Google Gemini API key - get one at aistudio.google.com
+
+5. Create a `.env` file in the root folder
 ```
 GOOGLE_API_KEY=your-key-here
 ```
 
-5. Run a project
+6. Run a project
 ```
 python basic_chatbot.py
 python tennis_analyst_bot.py
