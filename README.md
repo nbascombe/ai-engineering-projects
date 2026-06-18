@@ -89,11 +89,30 @@ rather than hallucinating.
 
 ---
 
+### 5. FastAPI Chatbot (`fastapi_chatbot.py`)
+**Problem:** A Python script calling an LLM directly can only be used by one person 
+in one place. Wrapping it as an API makes it usable by any client - a frontend, 
+another service, or a mobile app.
+**Approach:** Wrapped the basic chatbot in a FastAPI POST endpoint with Pydantic 
+request validation. Plain function (not async) so FastAPI runs it in a thread pool 
+and the blocking Gemini call doesn't freeze the event loop.
+**Outcome:** A running HTTP service that accepts a question and returns an LLM 
+response, testable via FastAPI's built-in Swagger UI at /docs.
+
+**Concepts covered:**
+- FastAPI endpoint structure and route decoration
+- Pydantic models for request validation
+- Health check endpoints
+- Testing APIs via Swagger UI
+
+---
+
 ## Technical Progression
 - `basic_chatbot.py` - stateless, single call, no memory
 - `tennis_analyst_bot.py` - stateful, conversational, structured JSON outputs, validated responses
 - `rag_foundation/` - embeddings, vector storage, semantic search - retrieval layer of a RAG system
 - `rag_chatbot/` - full RAG pipeline with persistent vector store and grounded LLM responses
+- `fastapi_chatbot.py` - LLM wrapped as an HTTP service, Pydantic validation, health endpoint
 
 ---
 
@@ -104,6 +123,8 @@ rather than hallucinating.
 - python-dotenv
 - ChromaDB
 - LangChain
+- FastAPI
+- Uvicorn
 
 ---
 
@@ -139,6 +160,11 @@ python tennis_analyst_bot.py
 python -m rag_foundation.rag_foundation
 python -m rag_chatbot.rag_chatbot
 ```
+FastAPI service (runs on http://localhost:8000):
+```
+uvicorn fastapi_chatbot:app --reload
+```
+Test via the built-in docs UI at http://localhost:8000/docs
 
 ---
 
