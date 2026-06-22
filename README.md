@@ -91,19 +91,22 @@ rather than hallucinating.
 
 ### 5. FastAPI Chatbot (`fastapi_chatbot.py`)
 **Problem:** A Python script calling an LLM directly can only be used by one person 
-in one place. Wrapping it as an API makes it usable by any client - a frontend, 
-another service, or a mobile app.
-**Approach:** Wrapped the basic chatbot in a FastAPI POST endpoint with Pydantic 
-request validation. Plain function (not async) so FastAPI runs it in a thread pool 
-and the blocking Gemini call doesn't freeze the event loop.
-**Outcome:** A running HTTP service that accepts a question and returns an LLM 
-response, testable via FastAPI's built-in Swagger UI at /docs.
+in one place. And a naive implementation, even wrapped in FastAPI, blocks a thread 
+per request, which doesn't scale.
+**Approach:** Wrapped the chatbot in a FastAPI POST endpoint with Pydantic request 
+validation. First as a sync function (FastAPI offloads to a thread pool), then updated 
+to async def with await client.aio.models.generate_content so the event loop isn't 
+blocked while Gemini processes.
+**Outcome:** A running HTTP service testable via Swagger at /docs, where concurrent 
+requests are handled on a single thread without blocking - no thread-per-request overhead.
 
 **Concepts covered:**
 - FastAPI endpoint structure and route decoration
 - Pydantic models for request validation
 - Health check endpoints
 - Testing APIs via Swagger UI
+- sync vs async endpoints - thread pool vs event loop
+- client.aio for non-blocking Gemini calls
 
 ---
 

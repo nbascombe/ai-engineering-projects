@@ -13,8 +13,8 @@ class Question(BaseModel):
     content: str
 
 @app.post("/output")
-def content_output(question: Question):
-    response = client.models.generate_content(
+async def content_output(question: Question):
+    response = await client.aio.models.generate_content(
         model="gemini-2.5-flash",
         contents=question.content
     )
