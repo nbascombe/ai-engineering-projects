@@ -69,7 +69,7 @@ is to pass the retrieved documents to an LLM as context to generate an answer.
 
 ---
 
-### 4. TennisRulesBot (`rag_chatbot/`)
+### 4. TennisRulesBot CLI (`rag_chatbot.py`)
 **Problem:** LLMs hallucinate confidently when asked about specific rule details they weren't trained on precisely.
 **Approach:** Full RAG (Retrieval Augmented Generation) pipeline over the official 2026 ITF Rules of Tennis PDF. Document loaded, chunked at 1200 chars, embedded, stored persistently in ChromaDB, with the LLM instructed to answer only from retrieved context.
 **Outcome:** Answers rules questions grounded in the document; correctly refuses out-of-scope questions ("Where can I play baseball?") rather than hallucinating. Loads in under a second on subsequent runs via persistent vector store - no re-embedding needed.
@@ -110,12 +110,40 @@ requests are handled on a single thread without blocking - no thread-per-request
 
 ---
 
+### 6. TennisRulesBot API (`rag_chatbot/rag_api.py`)
+**Problem:** The RAG chatbot from Project 4 only runs as a CLI script usable by one 
+person, in one terminal, at a time. It can't be called by a frontend, another service, 
+or anything outside that terminal session.
+**Approach:** Wrapped the same RAG pipeline as a FastAPI service. The ChromaDB collection 
+is built once at startup via a `lifespan` context manager and shared across requests 
+through `app.state`, rather than rebuilt per call. Pydantic validation strips and 
+rejects empty/whitespace-only input. Unlike the CLI's persistent chat session, each 
+request is answered statelessly via a single generate call - no conversation history 
+is shared across callers.
+**Outcome:** A running HTTP service returning grounded answers to tennis rules questions, 
+testable via Swagger UI. Verified against the same questions the CLI answers correctly, 
+and confirmed (via a deliberately ambiguous follow-up - "is that the same in doubles?") 
+that no history carries over between requests, as expected for a stateless design.
+
+**Concepts covered:**
+- Wrapping an existing RAG pipeline as a FastAPI service
+- Sharing expensive-to-build state (`app.state`) via `lifespan` startup/shutdown
+- Sync route handlers and why blocking SDK calls need FastAPI's thread pool
+- Pydantic request validation with a custom field validator
+- REST statelessness as a deliberate design tradeoff, not a limitation of AI APIs generally
+
+**Why this matters:**
+Same retrieval quality as Project 4, now reachable by any client over HTTP.
+
+---
+
 ## Technical Progression
 - `basic_chatbot.py` - stateless, single call, no memory
 - `tennis_analyst_bot.py` - stateful, conversational, structured JSON outputs, validated responses
 - `rag_foundation/` - embeddings, vector storage, semantic search - retrieval layer of a RAG system
 - `rag_chatbot/` - full RAG pipeline with persistent vector store and grounded LLM responses
-- `fastapi_chatbot.py` - LLM wrapped as an HTTP service, Pydantic validation, health endpoint
+- `rag_chatbot/rag_api.py`- same RAG pipeline as an HTTP service, stateless per request, Pydantic-validated. Uses `client.models.generate_content` (sync) and `client.models.embed_content` (sync, inside find_relevant_chunks) → correctly paired with plain def, letting FastAPI's thread pool handle it.
+- `fastapi_chatbot.py` - LLM wrapped as an HTTP service, Pydantic validation, health endpoint. Uses `client.aio.models.generate_content` → genuinely async → correctly paired with async def.
 
 ---
 
@@ -166,6 +194,7 @@ python -m rag_chatbot.rag_chatbot
 FastAPI service (runs on http://localhost:8000):
 ```
 uvicorn fastapi_chatbot:app --reload
+uvicorn rag_chatbot.rag_api:app --reload
 ```
 Test via the built-in docs UI at http://localhost:8000/docs
 
