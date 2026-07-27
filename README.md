@@ -10,13 +10,15 @@ adding complexity.
 
 ### 1. Basic Chatbot (`basic_chatbot.py`)
 **Problem:** What does a working LLM API call look like.
-**Approach:** Single stateless call to Gemini 2.5 Flash with no session, no prompt engineering, no parsing.
-**Outcome:** A working baseline that confirms the API integration, key management, and response structure - the foundation every subsequent project builds on.
+**Approach:** SInteractive terminal loop that takes user input, sends it to Gemini 2.5 Flash, and prints the response. Includes basic error handling with a one-time retry on API failure.
+**Outcome:** A working baseline confirming API integration, key management, and response structure - now also resilient to a single transient API failure without crashing the session.
 
 **Concepts covered:**
 - Gemini API integration
 - Secure API key management with environment variables
 - Stateless LLM calls
+- Terminal input loop
+- Basic retry on failure
 
 ---
 
