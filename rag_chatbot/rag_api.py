@@ -8,6 +8,7 @@ import time
 from fastapi import FastAPI
 from pydantic import BaseModel, Field, field_validator
 from contextlib import asynccontextmanager
+from fastapi.responses import StreamingResponse
 
 load_dotenv()
 
@@ -93,6 +94,16 @@ def build_prompt(context, question):
     
     Question: {question}"""
 
+def generate_tokens(question):
+    context = find_relevant_chunks(question.content, app.state.collection, 3)
+    response = client.models.generate_content_stream(
+        model="gemini-2.5-flash",
+        config={"system_instruction": "You are TennisRulesBot, a helpful tennis rules assistant. Answer questions using only the context provided. If the answer is not in the context, say so."},
+        contents=build_prompt(context, question.content)
+    )
+    for chunk in response:
+        yield chunk.text
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -108,15 +119,12 @@ class Question(BaseModel):
             raise ValueError("content cannot be empty or whitespace only")
         return v
 
-@app.post("/output")
+@app.post("/output", response_class=StreamingResponse)
 def content_output(question: Question):
-    context = find_relevant_chunks(question.content, app.state.collection, 3)
-    response = client.models.generate_content(
-    model="gemini-2.5-flash",
-    config={"system_instruction": "You are TennisRulesBot, a helpful tennis rules assistant. Answer questions using only the context provided. If the answer is not in the context, say so."},
-    contents=build_prompt(context, question.content)
+    return StreamingResponse(
+        generate_tokens(question),
+        media_type="text/plain"
     )
-    return {"response": response.text}
 
 
 
