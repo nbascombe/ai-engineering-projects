@@ -139,12 +139,27 @@ Same retrieval quality as Project 4, now reachable by any client over HTTP.
 
 ---
 
+### 7. TennisRulesBot WebSocket (`rag_chatbot/rag_api.py` - `/ws`)
+**Problem:** The stateless `/output` endpoint has no conversational memory, and the client waits for the full response rather than seeing tokens progressively.
+**Approach:** Added a `/ws` WebSocket endpoint holding one persistent Gemini chat session per connection, streaming tokens as they generate. Switched to the async Gemini client throughout, since WebSocket handlers in FastAPI must be `async def` and a blocking call inside one stalls every other connected client - not just the caller.
+**Outcome:** A stateful, streaming chat endpoint verified against a minimal HTML/JS client. Confirmed empirically (two concurrent connections, timed) that the async fix prevents one client's request from blocking another's. Also surfaced a real finding along the way: identical questions with identical retrieved context can produce contradictory LLM conclusions.
+
+**Concepts covered:**
+- WebSocket lifecycle and `async def` requirements in FastAPI
+- Async vs sync SDK clients and event-loop blocking
+- Connection-scoped persistent state vs stateless REST design
+- Defensive handling of streamed chunks that may carry no text
+- Distinguishing concurrency bugs from LLM non-determinism through controlled testing
+
+---
+
 ## Technical Progression
 - `basic_chatbot.py` - stateless, single call, no memory
 - `tennis_analyst_bot.py` - stateful, conversational, structured JSON outputs, validated responses
 - `rag_foundation/` - embeddings, vector storage, semantic search - retrieval layer of a RAG system
 - `rag_chatbot/` - full RAG pipeline with persistent vector store and grounded LLM responses
 - `rag_chatbot/rag_api.py`- same RAG pipeline as an HTTP service, stateless per request, Pydantic-validated. Uses `client.models.generate_content` (sync) and `client.models.embed_content` (sync, inside find_relevant_chunks) → correctly paired with plain def, letting FastAPI's thread pool handle it.
+- `rag_chatbot/rag_api.py` `/ws` - same pipeline again, now stateful per connection and fully async (`client.aio`), proving why sync calls inside `async def` WebSocket handlers block every other connected client.
 - `fastapi_chatbot.py` - LLM wrapped as an HTTP service, Pydantic validation, health endpoint. Uses `client.aio.models.generate_content` → genuinely async → correctly paired with async def.
 
 ---
@@ -199,6 +214,11 @@ uvicorn fastapi_chatbot:app --reload
 uvicorn rag_chatbot.rag_api:app --reload
 ```
 Test via the built-in docs UI at http://localhost:8000/docs
+
+WebSocket test client (with the API running):
+```
+http://localhost:8000/static/websocket_client.html
+```
 
 ---
 

@@ -5,10 +5,11 @@ from dotenv import load_dotenv
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import time
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field, field_validator
 from contextlib import asynccontextmanager
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 load_dotenv()
 
@@ -29,6 +30,9 @@ async def lifespan(app: FastAPI):
     app.state.collection = None
 
 app = FastAPI(lifespan=lifespan)
+
+# Now reachable via http://localhost:8000/static/websocket_client.html
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 def chunk_document(document):
     """Split a document into chunks for embedding."""
@@ -104,6 +108,24 @@ def generate_tokens(question):
     for chunk in response:
         yield chunk.text
 
+
+async def embed_text_async(text): 
+    """Embed a string using Gemini and return a list of floats."""
+    result = await client.aio.models.embed_content(
+        model="gemini-embedding-001",
+        contents=text
+    )
+    return result.embeddings[0].values
+
+async def find_relevant_chunks_async(question, collection, n_results=3):
+    """For an embedded question query the ChromaDB collection and return the n top results."""
+    question_embedding = await embed_text_async(question)
+    results = collection.query(
+        query_embeddings=[question_embedding],
+        n_results=n_results
+    )
+    return results['documents'][0]
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -119,6 +141,7 @@ class Question(BaseModel):
             raise ValueError("content cannot be empty or whitespace only")
         return v
 
+# HTTP chunked streaming
 @app.post("/output", response_class=StreamingResponse)
 def content_output(question: Question):
     return StreamingResponse(
@@ -126,5 +149,25 @@ def content_output(question: Question):
         media_type="text/plain"
     )
 
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
 
+    chat = client.aio.chats.create(
+        model="gemini-2.5-flash",
+        config={"system_instruction": "You are TennisRulesBot, a helpful tennis rules assistant. Answer questions using only the context provided. If the answer is not in the context, say so."}
+    )
+
+    try:
+        while True:
+            question = await websocket.receive_text()
+            context = await find_relevant_chunks_async(question, app.state.collection, 3)
+            response = await chat.send_message_stream(build_prompt(context, question))
+            async for chunk in response:
+                if chunk.text:
+                    await websocket.send_text(chunk.text)
+    except WebSocketDisconnect:
+        print("Client disconnected")
+    except Exception as e:
+        print(f"WebSocket error: {e}")
 

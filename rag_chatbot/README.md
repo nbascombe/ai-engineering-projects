@@ -1,6 +1,6 @@
 # TennisRulesBot
 
-Two interfaces over the same RAG pipeline: a stateful CLI tool and a stateless HTTP API. Both answer questions grounded in the official 2026 ITF Rules of Tennis PDF, and both correctly refuse to answer outside that scope rather than hallucinating.
+Three interfaces over the same RAG pipeline: a stateful CLI tool, a stateless HTTP API, and a stateful WebSocket endpoint. All answer questions grounded in the official 2026 ITF Rules of Tennis PDF, and correctly refuse to answer outside that scope rather than hallucinating.
 
 ```
 PDF → Load → Chunk → Embed → ChromaDB → Query → Retrieve chunks → LLM → Answer
@@ -136,6 +136,49 @@ This is the expected result, not a bug - the CLI's `rag_chatbot.py` keeps a sing
 
 ---
 
+## 3. WebSocket - `/ws` endpoint in `rag_api.py`
+
+**Problem:** The stateless `/output` endpoint answers each request independently, matching expected behaviour for REST API but losing conversational memory - a genuine limitation noted in that section's "What I'd improve." A chatbot UX also benefits from tokens streaming in as they're generated rather than the client waiting for a full response.
+**Approach:** Added a `/ws` WebSocket endpoint that opens a **persistent Gemini chat session per connection**, unlike `/output`'s single-shot calls. Each connection loops on `receive_text()`/`send_message_stream()`, streaming tokens back to the client as they arrive. Switched all underlying calls (`embed_content`, `send_message_stream`) to the async Gemini client (`client.aio`) rather than the sync versions used elsewhere in this file, since a blocking call inside an `async def` WebSocket handler stalls the event loop for every other connected client - not just the one making the call.
+**Outcome:** A working stateful, streaming chat endpoint, tested with a minimal HTML/JS client (`static/websocket_client.html`) served via FastAPI's `StaticFiles` mount at `/static/websocket_client.html`. Verified two concurrent connections stream independently without blocking each other, and that each connection keeps its own conversational memory via its own `chat` object - unlike the shared-session bug documented in `/output`'s design history.
+
+### Example interaction
+
+You: What counts as in during a game?
+Assistant: A ball landing in the correct court is considered a good return.
+
+### Technical decisions
+
+**Async Gemini client, not sync** - the sync client (`client.models.*`, used elsewhere in this file for `/output`) blocks the event loop if called inside an `async def` handler. WebSocket routes in FastAPI *must* be `async def` (no sync option, unlike HTTP routes), so blocking calls inside them stall every other open connection, not just the caller. Confirmed this by opening two browser tabs, sending messages in each within the same second, and verifying both streamed concurrently rather than one waiting on the other.
+
+**Persistent `chat` object per connection** - created once when the connection opens (`client.aio.chats.create(...)`), reused across every message on that connection. This gives the WebSocket endpoint the conversational memory the stateless `/output` endpoint explicitly lacks, using the connection's natural lifecycle rather than a separate session-ID scheme.
+
+**Filtering `None`/empty chunks before sending** - Gemini's streamed chunks aren't guaranteed to carry text (e.g. metadata-only chunks). `websocket.send_text(chunk.text)` raises `TypeError: data must be str, bytes-like, or iterable` if `chunk.text` is `None`. Fixed with `if chunk.text: await websocket.send_text(chunk.text)`.
+
+**`WebSocketDisconnect` handling** - without it, a client closing their tab raises an unhandled exception in the server loop. Caught explicitly and logged.
+
+### What I'd improve
+
+- Session cleanup/expiry - currently every open connection holds a `chat` object in memory indefinitely; no timeout or limit on concurrent sessions
+- `collection.query()` (ChromaDB) is still a sync call inside the async handler - smaller blocking cost than the network-bound embed/generate calls, but not addressed here. Could wrap with `asyncio.to_thread()`
+- Compare against SSE for this exact use case - implement `/output` as proper `text/event-stream` SSE and compare against this WebSocket version directly
+
+### System design: WebSocket vs SSE for this use case
+
+Built as a WebSocket per the exercise, but the data flow here is one-directional per response - the client sends one question, then only listens. Even actions that seem to need bidirectional communication (stopping generation, editing a message) don't actually require sending data into an *open* stream; they're an abort of the current connection followed by a fresh request. SSE (`text/event-stream`) would fit this specific chatbot's needs with less protocol complexity - built-in reconnection via the browser's `EventSource` API, plain HTTP (fewer proxy/firewall issues than a protocol upgrade), no framing to hand-roll. WebSockets earn their complexity when the product needs genuine simultaneous two-way data - e.g. multi-user chat, voice.
+
+### Concepts covered
+
+- WebSocket connection lifecycle in FastAPI - `accept()`, `receive_text()`/`send_text()` loop, `WebSocketDisconnect`
+- Why WebSocket handlers must be `async def`, and the consequence of blocking calls inside one
+- Async vs sync Gemini client (`client.aio` vs `client.models`) and when each is required, not just preferred
+- Persistent, connection-scoped state (`chat` session) vs the stateless-per-request design of `/output`
+- Streaming response chunks aren't guaranteed non-empty - defensive handling required
+- Empirically distinguishing a concurrency bug from LLM sampling non-determinism by holding retrieval context constant
+- FastAPI `StaticFiles` mount for serving a minimal test client
+
+---
+
 ## Prerequisites
 
 - A Google Gemini API key - get one at aistudio.google.com
@@ -166,3 +209,4 @@ Test via the built-in docs UI at http://localhost:8000/docs
 - `rag_api.py` - FastAPI service exposing the same retrieval pipeline over HTTP, stateless per request
 - `documents/2026-ITF-Rules-of-Tennis.pdf` - the ITF Rules of Tennis
 - `chroma_db/` - generated on first run, not committed to git
+- `static/websocket_client.html` - minimal HTML/JS test client for the `/ws` endpoint
