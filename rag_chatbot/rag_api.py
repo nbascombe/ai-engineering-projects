@@ -149,6 +149,7 @@ def content_output(question: Question):
         media_type="text/plain"
     )
 
+# Websocket streaming
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()

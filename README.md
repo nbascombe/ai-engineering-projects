@@ -10,7 +10,7 @@ adding complexity.
 
 ### 1. Basic Chatbot (`basic_chatbot.py`)
 **Problem:** What does a working LLM API call look like.
-**Approach:** SInteractive terminal loop that takes user input, sends it to Gemini 2.5 Flash, and prints the response. Includes basic error handling with a one-time retry on API failure.
+**Approach:** Interactive terminal loop that takes user input, sends it to Gemini 2.5 Flash, and prints the response. Includes basic error handling with a one-time retry on API failure.
 **Outcome:** A working baseline confirming API integration, key management, and response structure - now also resilient to a single transient API failure without crashing the session.
 
 **Concepts covered:**
@@ -71,7 +71,7 @@ is to pass the retrieved documents to an LLM as context to generate an answer.
 
 ---
 
-### 4. TennisRulesBot CLI (`rag_chatbot.py`)
+### 4. TennisRulesBot CLI (`rag_chatbot/rag_chatbot.py`)
 **Problem:** LLMs hallucinate confidently when asked about specific rule details they weren't trained on precisely.
 **Approach:** Full RAG (Retrieval Augmented Generation) pipeline over the official 2026 ITF Rules of Tennis PDF. Document loaded, chunked at 1200 chars, embedded, stored persistently in ChromaDB, with the LLM instructed to answer only from retrieved context.
 **Outcome:** Answers rules questions grounded in the document; correctly refuses out-of-scope questions ("Where can I play baseball?") rather than hallucinating. Loads in under a second on subsequent runs via persistent vector store - no re-embedding needed.
@@ -93,7 +93,7 @@ rather than hallucinating.
 
 ### 5. FastAPI Chatbot (`fastapi_chatbot.py`)
 **Problem:** A Python script calling an LLM directly can only be used by one person 
-in one place. And a naive implementation, even wrapped in FastAPI, blocks a thread 
+in one place. A naive implementation, even wrapped in FastAPI, blocks a thread 
 per request, which doesn't scale.
 **Approach:** Wrapped the chatbot in a FastAPI POST endpoint with Pydantic request 
 validation. First as a sync function (FastAPI offloads to a thread pool), then updated 
@@ -158,9 +158,9 @@ Same retrieval quality as Project 4, now reachable by any client over HTTP.
 - `tennis_analyst_bot.py` - stateful, conversational, structured JSON outputs, validated responses
 - `rag_foundation/` - embeddings, vector storage, semantic search - retrieval layer of a RAG system
 - `rag_chatbot/` - full RAG pipeline with persistent vector store and grounded LLM responses
+- `fastapi_chatbot.py` - LLM wrapped as an HTTP service, Pydantic validation, health endpoint. Uses `client.aio.models.generate_content` → genuinely async → correctly paired with async def.
 - `rag_chatbot/rag_api.py`- same RAG pipeline as an HTTP service, stateless per request, Pydantic-validated. Uses `client.models.generate_content` (sync) and `client.models.embed_content` (sync, inside find_relevant_chunks) → correctly paired with plain def, letting FastAPI's thread pool handle it.
 - `rag_chatbot/rag_api.py` `/ws` - same pipeline again, now stateful per connection and fully async (`client.aio`), proving why sync calls inside `async def` WebSocket handlers block every other connected client.
-- `fastapi_chatbot.py` - LLM wrapped as an HTTP service, Pydantic validation, health endpoint. Uses `client.aio.models.generate_content` → genuinely async → correctly paired with async def.
 
 ---
 
