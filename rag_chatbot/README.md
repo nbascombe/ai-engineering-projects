@@ -1,10 +1,11 @@
 # TennisRulesBot
 
-Three interfaces over the same RAG pipeline: a stateful CLI tool, a stateless HTTP API, and a stateful WebSocket endpoint. All answer questions grounded in the official 2026 ITF Rules of Tennis PDF, and correctly refuse to answer outside that scope rather than hallucinating.
+Three interfaces over the same RAG pipeline: a stateful CLI tool, a stateless HTTP API (now with Redis cache-aside caching on repeat questions), and a stateful WebSocket endpoint. All answer questions grounded in the official 2026 ITF Rules of Tennis PDF, and correctly refuse to answer outside that scope rather than hallucinating.
 
 ```
 PDF → Load → Chunk → Embed → ChromaDB → Query → Retrieve chunks → LLM → Answer
 ```
+The HTTP API additionally checks a Redis cache before running this pipeline - on a cache hit, embedding, retrieval, and generation are skipped entirely. See the Caching section below.
 
 On first run the pipeline builds and persists the ChromaDB collection to disk. Every subsequent run - CLI or API - loads the existing collection, so no re-embedding is needed.
 
@@ -121,7 +122,7 @@ This is the expected result, not a bug - the CLI's `rag_chatbot.py` keeps a sing
 ### What I'd improve
 
 - **Conversation history.** The endpoint currently answers each request independently. To support follow-ups, either (a) have the client send prior turns in the request body and rebuild the prompt with that history each call (fully stateless, no server memory), or (b) key a chat session per client with a session ID and expire unused sessions after a timeout. Went with neither for now since the current schema doesn't ask for it - noted here as the natural next step.
-- **Rate limiting** - nothing currently stops one client from hammering the endpoint.
+- **Rate limiting** - nothing currently stops one client from hammering the endpoint. (Caching in section 4 reduces repeat-question load, but doesn't rate-limit distinct questions.)
 - **Structured request/response logging** - prompt, response, latency, token count per call.
 - **Confidence scoring on retrieval**, same as the CLI's improvement list.
 
@@ -179,6 +180,51 @@ Built as a WebSocket per the exercise, but the data flow here is one-directional
 
 ---
 
+## 4. Caching - cache-aside pattern on the HTTP API (`/output` only, not `/ws`)
+
+**Problem:** Every call to `/output` re-embeds the question, re-queries ChromaDB, and re-generates a full response from Gemini even when the exact same question has already been answered. For a fixed source document (the rules don't change), that's wasted latency and API cost on repeat questions.
+**Approach:** Implemented cache-aside caching in `generate_tokens`: on each request, normalise the question (`.strip().lower()`) and check Redis first. On a hit, return the stored answer directly, skipping embedding, retrieval, and generation entirely. On a miss, run the full pipeline as before, but collect the streamed chunks into a single string and write it to Redis with a TTL before returning. Chose a long TTL (6000s) deliberately, since the source PDF is static — a low TTL would suit a system where the underlying documents change regularly, but here it just causes unnecessary cache churn.
+**Outcome:** Verified with `time curl` on the identical question: a cache miss took ~4.95s (embedding + retrieval + generation), a cache hit took ~0.034s — roughly a 145x speedup. Confirmed via `redis-cli` and a Python shell that keys and values are stored as expected. Also verified normalisation works — the same question with different casing and leading whitespace (`"      what is a tiebreak?"`) correctly hit the same cache entry rather than creating a duplicate. The bytes/str inconsistency between cache hit and miss branches, found during testing, was resolved with decode_responses=True on the Redis connection.
+
+### Example
+```
+time curl -X POST http://127.0.0.1:8000/output -d '{"content": "what is a tiebreak?"}'
+```
+# Cache miss
+real 0m4.954s
+
+```
+time curl -X POST http://127.0.0.1:8000/output -d '{"content": "what is a tiebreak?"}'
+```
+# Cache hit
+real 0m0.034s
+
+### Technical decisions
+
+**Cache key: normalised question text, not the raw string** - the first implementation used the raw `question.content` as the Redis key, which meant `"What is a tiebreak?"` and `"what is a tiebreak?"` were treated as two different entries. Found this by inspecting `redis-cli KEYS *` and seeing a lookup miss on a key I could see was clearly stored. Fixed by normalising with `.strip().lower()` before both the `r.get` and `r.set` calls, so casing and surrounding whitespace no longer fragment the cache.
+
+**Consuming the stream before caching, not caching the stream object** - `generate_content_stream` returns a live generator; it can't be handed directly to `r.set()` since Redis only stores primitive types. Instead, each `chunk.text` is yielded to the client *and* appended to a list as it arrives, then joined into a single string (`" ".join(chunks)`) once the stream is exhausted, that string is what gets cached.
+
+**Cache hit yields once, not chunk-by-chunk** - the miss branch streams token-by-token as Gemini generates them; the hit branch yields the whole cached string in a single `yield`. This is a deliberate asymmetry: the client only needs the correct final text delivered as *a* stream, not the exact same chunk boundaries the original generation happened to produce.
+
+**Redis connection with `decode_responses=True`** - `r.get()` returns `bytes` by default, while the cache-miss branch yields `str` (`chunk.text`) - a real type inconsistency between the two code paths, found while testing. Rather than decoding at the single call site (`cache_response.decode("utf-8")`), fixed it at the connection level with `redis.Redis(decode_responses=True)`, so every `r.get()` on this connection returns `str` automatically. A connection-level fix so any future Redis reads added to this file don't need to remember to decode individually - though worth noting it assumes every value on this connection is text, which holds here but wouldn't if binary data were ever cached on the same connection.
+
+### What I'd improve
+
+- **Semantic caching** - exact-match-after-normalisation still misses paraphrases (`"what's a tiebreak?"` vs `"what is a tiebreak?"`). Would need embedding-based similarity lookup against cached questions instead of a literal key match.
+- **Cache invalidation strategy** - currently relies purely on TTL expiry. If the source PDF changes, there's no mechanism to invalidate cached answers immediately.
+
+### Concepts covered
+
+- Cache-aside pattern - check cache, miss → do the work → populate cache, hit → skip the work
+- Redis SET/GET with TTL
+- Why LLM calls specifically benefit from caching - I/O-bound latency, not CPU-bound, confirmed by `real` time dropping ~145x while `user`/`sys` stayed flat
+- Cache key design - exact-string match vs normalisation, and the fragility of unnormalised keys
+- Consuming a generator to produce a single cacheable value while still streaming it to the original caller
+- Fixing a type inconsistency at the connection level (`decode_responses=True`) rather than patching each call site individually
+
+---
+
 ## Prerequisites
 
 - A Google Gemini API key - get one at aistudio.google.com
@@ -206,7 +252,7 @@ Test via the built-in docs UI at http://localhost:8000/docs
 ## Files
 
 - `rag_chatbot.py` - CLI pipeline and chat loop, stateful across a terminal session
-- `rag_api.py` - FastAPI service exposing the same retrieval pipeline over HTTP, stateless per request
+- `rag_api.py` - FastAPI service exposing the same retrieval pipeline over HTTP, stateless per request, with cache-aside caching on `/output`
 - `documents/2026-ITF-Rules-of-Tennis.pdf` - the ITF Rules of Tennis
 - `chroma_db/` - generated on first run, not committed to git
 - `static/websocket_client.html` - minimal HTML/JS test client for the `/ws` endpoint

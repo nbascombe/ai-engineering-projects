@@ -125,7 +125,10 @@ is shared across callers.
 **Outcome:** A running HTTP service returning grounded answers to tennis rules questions, 
 testable via Swagger UI. Verified against the same questions the CLI answers correctly, 
 and confirmed (via a deliberately ambiguous follow-up - "is that the same in doubles?") 
-that no history carries over between requests, as expected for a stateless design.
+that no history carries over between requests, as expected for a stateless design. 
+Added cache-aside caching on top: repeat questions skip embedding, retrieval, and 
+generation entirely via a Redis lookup, cutting response time from ~5s to ~0.03s on a 
+cache hit.
 
 **Concepts covered:**
 - Wrapping an existing RAG pipeline as a FastAPI service
@@ -133,6 +136,7 @@ that no history carries over between requests, as expected for a stateless desig
 - Sync route handlers and why blocking SDK calls need FastAPI's thread pool
 - Pydantic request validation with a custom field validator
 - REST statelessness as a deliberate design tradeoff, not a limitation of AI APIs generally
+- Cache-aside pattern with Redis - normalised cache keys, TTL strategy for static source data, consuming a stream into a single cacheable value
 
 **Why this matters:**
 Same retrieval quality as Project 4, now reachable by any client over HTTP.
@@ -159,7 +163,7 @@ Same retrieval quality as Project 4, now reachable by any client over HTTP.
 - `rag_foundation/` - embeddings, vector storage, semantic search - retrieval layer of a RAG system
 - `rag_chatbot/` - full RAG pipeline with persistent vector store and grounded LLM responses
 - `fastapi_chatbot.py` - LLM wrapped as an HTTP service, Pydantic validation, health endpoint. Uses `client.aio.models.generate_content` → genuinely async → correctly paired with async def.
-- `rag_chatbot/rag_api.py`- same RAG pipeline as an HTTP service, stateless per request, Pydantic-validated. Uses `client.models.generate_content` (sync) and `client.models.embed_content` (sync, inside find_relevant_chunks) → correctly paired with plain def, letting FastAPI's thread pool handle it.
+- `rag_chatbot/rag_api.py`- same RAG pipeline as an HTTP service, stateless per request, Pydantic-validated, with Redis cache-aside caching on `/output` (~145x faster on a cache hit vs miss). Uses `client.models.generate_content` (sync) and `client.models.embed_content` (sync, inside find_relevant_chunks) → correctly paired with plain def, letting FastAPI's thread pool handle it.
 - `rag_chatbot/rag_api.py` `/ws` - same pipeline again, now stateful per connection and fully async (`client.aio`), proving why sync calls inside `async def` WebSocket handlers block every other connected client.
 
 ---
@@ -173,6 +177,7 @@ Same retrieval quality as Project 4, now reachable by any client over HTTP.
 - LangChain
 - FastAPI
 - Uvicorn
+- Redis
 
 ---
 

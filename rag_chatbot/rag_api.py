@@ -10,12 +10,15 @@ from pydantic import BaseModel, Field, field_validator
 from contextlib import asynccontextmanager
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+import redis
 
 load_dotenv()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+
+r = redis.Redis(decode_responses=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -99,14 +102,23 @@ def build_prompt(context, question):
     Question: {question}"""
 
 def generate_tokens(question):
-    context = find_relevant_chunks(question.content, app.state.collection, 3)
-    response = client.models.generate_content_stream(
-        model="gemini-2.5-flash",
-        config={"system_instruction": "You are TennisRulesBot, a helpful tennis rules assistant. Answer questions using only the context provided. If the answer is not in the context, say so."},
-        contents=build_prompt(context, question.content)
-    )
-    for chunk in response:
-        yield chunk.text
+    cache_key = question.content.lower()
+    cache_response = r.get(cache_key)
+    if cache_response:
+        yield cache_response
+    else:
+        context = find_relevant_chunks(question.content, app.state.collection, 3)
+        response = client.models.generate_content_stream(
+            model="gemini-2.5-flash",
+            config={"system_instruction": "You are TennisRulesBot, a helpful tennis rules assistant. Answer questions using only the context provided. If the answer is not in the context, say so."},
+            contents=build_prompt(context, question.content)
+        )
+        chunks = []
+        for chunk in response:
+            yield chunk.text
+            chunks.append(chunk.text)
+        chunks_string = " ".join(chunks)
+        r.set(cache_key, chunks_string, ex=6000)
 
 
 async def embed_text_async(text): 
