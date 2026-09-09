@@ -10,7 +10,8 @@ from pydantic import BaseModel, Field, field_validator
 from contextlib import asynccontextmanager
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-import redis
+import redis.asyncio as redis
+import asyncio
 
 load_dotenv()
 
@@ -101,9 +102,9 @@ def build_prompt(context, question):
     
     Question: {question}"""
 
-def generate_tokens(question):
+async def generate_tokens(question):
     cache_key = question.content.lower()
-    cache_response = r.get(cache_key)
+    cache_response = await r.get(cache_key)
     if cache_response:
         yield cache_response
     else:
@@ -118,7 +119,7 @@ def generate_tokens(question):
             yield chunk.text
             chunks.append(chunk.text)
         chunks_string = " ".join(chunks)
-        r.set(cache_key, chunks_string, ex=6000)
+        task = asyncio.create_task(r.set(cache_key, chunks_string, ex=6000))
 
 
 async def embed_text_async(text): 
@@ -155,7 +156,7 @@ class Question(BaseModel):
 
 # HTTP chunked streaming
 @app.post("/output", response_class=StreamingResponse)
-def content_output(question: Question):
+async def content_output(question: Question):
     return StreamingResponse(
         generate_tokens(question),
         media_type="text/plain"

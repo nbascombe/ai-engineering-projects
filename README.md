@@ -165,6 +165,7 @@ Same retrieval quality as Project 4, now reachable by any client over HTTP.
 - `fastapi_chatbot.py` - LLM wrapped as an HTTP service, Pydantic validation, health endpoint. Uses `client.aio.models.generate_content` → genuinely async → correctly paired with async def.
 - `rag_chatbot/rag_api.py`- same RAG pipeline as an HTTP service, stateless per request, Pydantic-validated, with Redis cache-aside caching on `/output` (~145x faster on a cache hit vs miss). Uses `client.models.generate_content` (sync) and `client.models.embed_content` (sync, inside find_relevant_chunks) → correctly paired with plain def, letting FastAPI's thread pool handle it.
 - `rag_chatbot/rag_api.py` `/ws` - same pipeline again, now stateful per connection and fully async (`client.aio`), proving why sync calls inside `async def` WebSocket handlers block every other connected client.
+- `rag_chatbot/rag_api.py` `/output` (updated) - cache writes moved to `redis.asyncio` with `asyncio.create_task()`, so a cache miss no longer holds the response open waiting on the Redis write. Confirmed the write still completes reliably despite being fire-and-forget (5/5 fresh questions landed in Redis on manual testing). Benchmarked hit vs miss over N=10: ~0.050s hit average vs ~3.18s miss average, a ~64x speedup - lower than the earlier sync-write figure, most likely sample-size and outlier sensitivity rather than a real regression, and worth re-checking with a larger N or median instead of mean.
 
 ---
 

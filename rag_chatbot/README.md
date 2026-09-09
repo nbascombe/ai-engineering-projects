@@ -190,18 +190,18 @@ Built as a WebSocket per the exercise, but the data flow here is one-directional
 ```
 time curl -X POST http://127.0.0.1:8000/output -d '{"content": "what is a tiebreak?"}'
 ```
-# Cache miss
+#### Cache miss
 real 0m4.954s
 
 ```
 time curl -X POST http://127.0.0.1:8000/output -d '{"content": "what is a tiebreak?"}'
 ```
-# Cache hit
+#### Cache hit
 real 0m0.034s
 
 ### Technical decisions
 
-**Cache key: normalised question text, not the raw string** - the first implementation used the raw `question.content` as the Redis key, which meant `"What is a tiebreak?"` and `"what is a tiebreak?"` were treated as two different entries. Found this by inspecting `redis-cli KEYS *` and seeing a lookup miss on a key I could see was clearly stored. Fixed by normalising with `.strip().lower()` before both the `r.get` and `r.set` calls, so casing and surrounding whitespace no longer fragment the cache.
+**Cache key: normalised question text, not the raw string** - the first implementation used the raw `question.content` as the Redis key, which meant `"What is a tiebreak?"` and `"what is a tiebreak?"` were treated as two different entries. Found this by inspecting `redis-cli KEYS *` and seeing a lookup miss on a key I could see was clearly stored. Fixed by lowercasing with `.lower()` before both the `r.get` and `r.set` calls, so casing no longer fragments the cache. Surrounding whitespace is already handled upstream — the Pydantic `field_validator` on `Question.content` strips it before the request reaches this function — so the cache key doesn't need its own `.strip()` call on top of that.
 
 **Consuming the stream before caching, not caching the stream object** - `generate_content_stream` returns a live generator; it can't be handed directly to `r.set()` since Redis only stores primitive types. Instead, each `chunk.text` is yielded to the client *and* appended to a list as it arrives, then joined into a single string (`" ".join(chunks)`) once the stream is exhausted, that string is what gets cached.
 
@@ -213,6 +213,38 @@ real 0m0.034s
 
 - **Semantic caching** - exact-match-after-normalisation still misses paraphrases (`"what's a tiebreak?"` vs `"what is a tiebreak?"`). Would need embedding-based similarity lookup against cached questions instead of a literal key match.
 - **Cache invalidation strategy** - currently relies purely on TTL expiry. If the source PDF changes, there's no mechanism to invalidate cached answers immediately.
+
+### Update: Async cache writes
+
+**Problem:** The original cache-aside implementation used a synchronous Redis client. `r.set()` ran after the full response had already streamed to the client, meaning the request's worker thread sat idle waiting on a write the caller no longer needed to wait on.
+
+**Approach:** Switched to `redis.asyncio` and converted `generate_tokens` and the `/output` route to `async def`. The cache write is now wrapped in `asyncio.create_task()` rather than awaited directly, so it fires in the background instead of blocking the generator from finishing.
+
+**Outcome:** Verified the write still lands reliably - sent 5 fresh (uncached) questions, waited for each response to fully complete, then confirmed via `redis-cli GET` that every key was present with no failures, despite the fire-and-forget pattern. No garbage-collection issues observed in this testing, though this wasn't stress-tested under concurrent load.
+
+### Benchmark: cache hit vs miss (post async-write change)
+
+Measured with `time curl`, N=10 per case, wall-clock `real` time:
+
+- **Cache hit** (same question repeated): ~0.050s average (first call 0.103s as a warm-up outlier, excluded)
+- **Cache miss** (10 distinct, never-asked questions): ~3.18s average, range 1.93s–6.81s
+
+**~64x speedup** on a hit vs a miss. Two things worth noting about these numbers:
+- Miss-case variance is wide and expected - it reflects Gemini's response latency for that specific question and answer length, not the caching layer. Hit-case timing is far tighter (Redis + FastAPI overhead is deterministic; LLM generation is not).
+- One outlier (6.81s) pulls the mean up noticeably; a median across the same 10 misses would likely tell a firmer story.
+
+### Technical decisions (async writes)
+
+**`asyncio.create_task`, not `await`, for the write** - awaiting `r.set()` would still hold the generator open until the write finished, which defeats the point. `create_task` starts it and lets the generator (and the response) complete independently.
+
+**Converted the route to `async def`** - with `generate_tokens` now an async generator, `content_output` needed to become `async def` too rather than relying on FastAPI's thread-pool fallback for sync routes.
+
+### What I'd improve (async writes)
+
+- `find_relevant_chunks` inside `generate_tokens` is still a fully synchronous call (embedding + Chroma query) now sitting inside an `async def` route - a candidate for `asyncio.to_thread()` so it doesn't block the event loop the way the WebSocket README section warns against.
+- Task lifetime isn't explicitly managed - `asyncio.create_task()` results aren't held in a persistent reference, which is a known asyncio footgun (tasks can be garbage-collected before completion). Not observed as a problem in manual testing, but not stress-tested under concurrent rapid-fire requests either.
+- Benchmark used mean, not median - a single slow outlier in the miss set skews the average upward; median would be more robust for a small sample size.
+
 
 ### Concepts covered
 
