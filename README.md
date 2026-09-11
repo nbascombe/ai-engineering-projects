@@ -157,6 +157,26 @@ Same retrieval quality as Project 4, now reachable by any client over HTTP.
 
 ---
 
+### 8. Tennis Tool Agent (`tennis_tool_agent.py`)
+**Problem:** RAG grounds answers in static documents, but some questions need live, current data no document can contain. "Will it rain during play in London today?" isn't answerable from a rules PDF or a fixed knowledge base. The model also has to decide *for itself* when a question needs that live data versus when it doesn't.
+**Approach:** Gave Gemini a single tool via manual function calling - `types.FunctionDeclaration` + `types.Tool`, passed into `generate_content` via `config`. Used manual (not automatic) function calling deliberately, so the model's decision to call the tool, or not, could be inspected on its own, separate from execution. The tool itself geocodes a city name via Open-Meteo's free geocoding endpoint, then queries current temperature, precipitation, and wind speed for those coordinates.
+**Outcome:** Confirmed the model calls the tool only when relevant - a weather-relevant question returns a `FunctionCall` with the correct city argument; a tennis-history question returns no function call and is answered directly from the model's own knowledge. Verified the full round trip: tool result fed back via `types.Part.from_function_response` produces a grounded final answer ("It will not rain in London today, as the precipitation is 0mm."), and an invalid location is handled gracefully - the model reads the tool's own error message and asks a clarifying question rather than guessing.
+
+**Concepts covered:**
+- Manual function calling / tool use with the Gemini SDK
+- Testing tool-selection behaviour deliberately, not just tool execution
+- Feeding a tool result back into a conversation and continuing the exchange
+- Structured, model-readable error responses from a tool function rather than raised exceptions
+- Geocoding as a two-step resolution (name → coordinates → data) before an external API call
+- The difference between a system prompt describing capabilities vs. restricting scope, and why the two aren't the same instruction
+
+**System prompt & guardrails:** Found two distinct failure modes from an underspecified system prompt, not from the tool itself. With no system instruction at all, the model narrowed its own scope to just the tool's description and refused an ordinary tennis question ("who won Wimbledon in 2023?") entirely - the tool description became the model's only sense of what it was allowed to do. After adding a system instruction describing tennis knowledge broadly, the model then answered a fully unrelated question ("what's the most popular city to visit?") as if it had no scope restriction at all - describing capabilities isn't the same as restricting them. Fixed with an instruction that explicitly restricts and redirects off-topic questions, rather than only describing what the model knows. This is a soft guardrail only enforced by prompt compliance, not code. `tennis_analyst_bot.py`'s `is_tennis_related` structured-output field already does this properly, since calling code can check a boolean instead of relying on the model to provide the weather itself.
+
+**Why this matters:**
+This is the first project in the repo where the model itself decides whether external code needs to run, rather than every call being explicit. That decision-making step, not the API call, is the actual skill being tested here.
+
+---
+
 ## Technical Progression
 - `basic_chatbot.py` - stateless, single call, no memory
 - `tennis_analyst_bot.py` - stateful, conversational, structured JSON outputs, validated responses
@@ -166,6 +186,7 @@ Same retrieval quality as Project 4, now reachable by any client over HTTP.
 - `rag_chatbot/rag_api.py`- same RAG pipeline as an HTTP service, stateless per request, Pydantic-validated, with Redis cache-aside caching on `/output` (~145x faster on a cache hit vs miss). Uses `client.models.generate_content` (sync) and `client.models.embed_content` (sync, inside find_relevant_chunks) → correctly paired with plain def, letting FastAPI's thread pool handle it.
 - `rag_chatbot/rag_api.py` `/ws` - same pipeline again, now stateful per connection and fully async (`client.aio`), proving why sync calls inside `async def` WebSocket handlers block every other connected client.
 - `rag_chatbot/rag_api.py` `/output` (updated) - cache writes moved to `redis.asyncio` with `asyncio.create_task()`, so a cache miss no longer holds the response open waiting on the Redis write. Confirmed the write still completes reliably despite being fire-and-forget (5/5 fresh questions landed in Redis on manual testing). Benchmarked hit vs miss over N=10: ~0.050s hit average vs ~3.18s miss average, a ~64x speedup - lower than the earlier sync-write figure, most likely sample-size and outlier sensitivity rather than a real regression, and worth re-checking with a larger N or median instead of mean.
+- `tennis_tool_agent.py` - first tool-use / function-calling project. Model decides whether to call a live weather tool based on the question, tested explicitly for both directions (calls when relevant, doesn't if not). Manual function calling used throughout so the tool-selection step stays inspectable rather than hidden behind automatic execution.
 
 ---
 
@@ -179,6 +200,7 @@ Same retrieval quality as Project 4, now reachable by any client over HTTP.
 - FastAPI
 - Uvicorn
 - Redis
+- Open-Meteo API (weather + geocoding, no key required)
 
 ---
 
@@ -225,6 +247,7 @@ WebSocket test client (with the API running):
 ```
 http://localhost:8000/static/websocket_client.html
 ```
+python tennis_tool_agent.py
 
 ---
 
