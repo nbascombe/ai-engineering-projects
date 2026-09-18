@@ -96,10 +96,45 @@ weather_function = types.FunctionDeclaration(
     }
 )
 
-tool = types.Tool(function_declarations=[weather_function])
+def resolve_set_score(player_a_games, player_b_games):
+    high = max(player_a_games, player_b_games)
+    low = min(player_a_games, player_b_games)
+    margin = high - low
+    if high == 6 and low == 6:
+        return 'Tiebreak'
+    if high == 7 and low == 6:
+        return 'Win by Tiebreak'
+    if high == 6 and margin >= 2:
+        return 'Win'
+    if high == 7 and low == 5:
+        return 'Win'
+    if high < 6 or (high == 6 and low == 5):
+        return 'In Progress'
+    return 'Invalid'
+
+set_scoring_function = types.FunctionDeclaration(
+    name='resolve_set_score',
+    description="Given the number of games won by player A and B respectively, return who has won the set. If no winner return if the set is still in progress or if a tiebreak is needed or underway.",
+    parameters_json_schema={
+        "type": "object",
+        "properties": {
+            "player_a_games": {
+                "type": "integer",
+                "description": "Number of games won in a set by Player A e.g. 2."
+            },
+            "player_b_games": {
+                "type": "integer",
+                "description": "Number of games won in a set by Player B e.g. 0."
+            }
+        },
+        "required": ['player_a_games', 'player_b_games']
+    }
+)
+
+tool = types.Tool(function_declarations=[weather_function, set_scoring_function])
 
 if __name__ == "__main__":
-    contents = ["Will it rain during play in London today?"]
+    contents = ["Is the match in London going to be delayed, and who's ahead in the set at 5-4?"]
 
     response = client.models.generate_content(
                 model="gemini-2.5-flash",
@@ -119,7 +154,12 @@ if __name__ == "__main__":
 
     if function_call:
         print(f"[tool called: {function_call.name}({function_call.args})]")
-        result = match_delay_risk_from_weather(**function_call.args)
+        if function_call.name == weather_function.name:
+            result = match_delay_risk_from_weather(**function_call.args)
+        elif function_call.name == set_scoring_function.name:
+            result = resolve_set_score(**function_call.args)
+        else:
+            result = {"success": False, "error": "unknown_tool", "message": f"No handler for {function_call.name}"}
 
         function_response_part = types.Part.from_function_response(
             name=function_call.name,
@@ -135,7 +175,7 @@ if __name__ == "__main__":
             contents=contents,
             config=types.GenerateContentConfig(tools=[tool])
         )
-
+        print(final_response.function_calls)
         print(final_response.text)
     else:
         print("[no tool called]")

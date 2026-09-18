@@ -175,6 +175,24 @@ Same retrieval quality as Project 4, now reachable by any client over HTTP.
 **Why this matters:**
 This is the first project in the repo where the model itself decides whether external code needs to run, rather than every call being explicit. That decision-making step, not the API call, is the actual skill being tested here.
 
+
+**Update: second tool + multi-tool dispatch**
+
+**Problem:** A single tool only covers questions needing one kind of external help. A real question can need two at once - "Is the match in London going to be delayed, and who's ahead in the set at 5-4?" - which means the agent needs multiple tools declared together, a way to route correctly between them, and (it turned out) more than one round trip.
+**Approach:** Added a second, fully deterministic tool - `resolve_set_score` - which resolves a tennis set's status (win, win by tiebreak, in progress, or invalid) purely from two integer game counts, no network call involved. Registered both function declarations on a single `types.Tool` and dispatched execution based on `function_call.name`.
+**Outcome:** Confirmed the model correctly selects the right tool for single-need questions (weather-only, scoring-only). Then, using a deliberately double-barreled question, discovered that a single round trip breaks once a question needs two sequential tool calls: the model's second response is itself another function call, not final text, and the existing one-hop code has nothing to execute it against. Confirmed via `final_response.function_calls` that this is a gap in the code's fixed round-trip shape, not a model reasoning failure - the model had already correctly worked out it needed both tools.
+
+**What I'd improve:**
+- Multi-tool sequential questions currently fail outright (see Outcome). Needs a loop that keeps sending results back to the model and checking for further function calls until a text-only response arrives - the ReAct pattern.
+- `resolve_set_score` currently returns bare status strings ('Win', 'Tiebreak') with no player identifier - fine for a single-tool test, but the model needs to know *who* won, not just that someone did, once this feeds into a real conversation.
+
+**Additional concepts covered:**
+- Registering multiple function declarations on one `Tool` and dispatching execution by name
+- The difference between comparing a function's name (a string) and comparing the function object itself
+- Building a fully deterministic, network-free tool and testing it exhaustively against enumerated edge cases, versus an I/O-bound tool that can only be spot-checked
+- Diagnosing a multi-hop tool-calling limitation by inspecting the second response's `function_calls` rather than assuming the model chose wrong
+- Translating a written rule into boundary conditions on the inputs, rather than a lookup table of specific cases seen during testing
+
 ---
 
 ## Technical Progression
@@ -186,7 +204,7 @@ This is the first project in the repo where the model itself decides whether ext
 - `rag_chatbot/rag_api.py`- same RAG pipeline as an HTTP service, stateless per request, Pydantic-validated, with Redis cache-aside caching on `/output` (~145x faster on a cache hit vs miss). Uses `client.models.generate_content` (sync) and `client.models.embed_content` (sync, inside find_relevant_chunks) → correctly paired with plain def, letting FastAPI's thread pool handle it.
 - `rag_chatbot/rag_api.py` `/ws` - same pipeline again, now stateful per connection and fully async (`client.aio`), proving why sync calls inside `async def` WebSocket handlers block every other connected client.
 - `rag_chatbot/rag_api.py` `/output` (updated) - cache writes moved to `redis.asyncio` with `asyncio.create_task()`, so a cache miss no longer holds the response open waiting on the Redis write. Confirmed the write still completes reliably despite being fire-and-forget (5/5 fresh questions landed in Redis on manual testing). Benchmarked hit vs miss over N=10: ~0.050s hit average vs ~3.18s miss average, a ~64x speedup - lower than the earlier sync-write figure, most likely sample-size and outlier sensitivity rather than a real regression, and worth re-checking with a larger N or median instead of mean.
-- `tennis_tool_agent.py` - first tool-use / function-calling project. Model decides whether to call a live weather tool based on the question, tested explicitly for both directions (calls when relevant, doesn't if not). Manual function calling used throughout so the tool-selection step stays inspectable rather than hidden behind automatic execution.
+- `tennis_tool_agent.py` - first tool-use / function-calling project. Model decides whether to call a live weather tool based on the question, tested explicitly for both directions (calls when relevant, doesn't when not). Manual function calling used throughout so the tool-selection step stays inspectable rather than hidden behind automatic execution. Updated to add a second, deterministic tool (set scoring tool) and dispatch-by-name across multiple registered tools. Testing a deliberately double-barreled question surfaced a real limitation: the current single-round-trip loop can't handle a question needing two sequential tool calls, since the model's second response is itself a function call rather than text - confirmed the model reasons correctly and the gap is in the code's shape, not tool selection, with the fix (a ReAct loop) planned next.
 
 ---
 
@@ -235,6 +253,7 @@ python basic_chatbot.py
 python tennis_analyst_bot.py
 python -m rag_foundation.rag_foundation
 python -m rag_chatbot.rag_chatbot
+python tennis_tool_agent.py
 ```
 FastAPI service (runs on http://localhost:8000):
 ```
@@ -247,7 +266,6 @@ WebSocket test client (with the API running):
 ```
 http://localhost:8000/static/websocket_client.html
 ```
-python tennis_tool_agent.py
 
 ---
 
