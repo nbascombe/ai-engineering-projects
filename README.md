@@ -162,13 +162,16 @@ Same retrieval quality as Project 4, now reachable by any client over HTTP.
 **Approach:** Gave Gemini a single tool via manual function calling - `types.FunctionDeclaration` + `types.Tool`, passed into `generate_content` via `config`. Used manual (not automatic) function calling deliberately, so the model's decision to call the tool, or not, could be inspected on its own, separate from execution. The tool itself geocodes a city name via Open-Meteo's free geocoding endpoint, then queries current temperature, precipitation, and wind speed for those coordinates.
 **Outcome:** Confirmed the model calls the tool only when relevant - a weather-relevant question returns a `FunctionCall` with the correct city argument; a tennis-history question returns no function call and is answered directly from the model's own knowledge. Verified the full round trip: tool result fed back via `types.Part.from_function_response` produces a grounded final answer ("It will not rain in London today, as the precipitation is 0mm."), and an invalid location is handled gracefully - the model reads the tool's own error message and asks a clarifying question rather than guessing.
 
-**Concepts covered:**
-- Manual function calling / tool use with the Gemini SDK
-- Testing tool-selection behaviour deliberately, not just tool execution
-- Feeding a tool result back into a conversation and continuing the exchange
-- Structured, model-readable error responses from a tool function rather than raised exceptions
-- Geocoding as a two-step resolution (name → coordinates → data) before an external API call
-- The difference between a system prompt describing capabilities vs. restricting scope, and why the two aren't the same instruction
+### Example interactions
+```json
+You: How do I serve?
+Assistant: To serve, stand at rest with both feet behind the baseline...
+```
+```json
+You: How does a tiebreak work?
+Assistant: When the score in a set reaches six games all, a tie-break game
+is played. The first player to reach seven points with a margin of two wins...
+```
 
 **System prompt & guardrails:** Found two distinct failure modes from an underspecified system prompt, not from the tool itself. With no system instruction at all, the model narrowed its own scope to just the tool's description and refused an ordinary tennis question ("who won Wimbledon in 2023?") entirely - the tool description became the model's only sense of what it was allowed to do. After adding a system instruction describing tennis knowledge broadly, the model then answered a fully unrelated question ("what's the most popular city to visit?") as if it had no scope restriction at all - describing capabilities isn't the same as restricting them. Fixed with an instruction that explicitly restricts and redirects off-topic questions, rather than only describing what the model knows. This is a soft guardrail only enforced by prompt compliance, not code. `tennis_analyst_bot.py`'s `is_tennis_related` structured-output field already does this properly, since calling code can check a boolean instead of relying on the model to provide the weather itself.
 
@@ -182,16 +185,26 @@ This is the first project in the repo where the model itself decides whether ext
 **Approach:** Added a second, fully deterministic tool - `resolve_set_score` - which resolves a tennis set's status (win, win by tiebreak, in progress, or invalid) purely from two integer game counts, no network call involved. Registered both function declarations on a single `types.Tool` and dispatched execution based on `function_call.name`.
 **Outcome:** Confirmed the model correctly selects the right tool for single-need questions (weather-only, scoring-only). Then, using a deliberately double-barreled question, discovered that a single round trip breaks once a question needs two sequential tool calls: the model's second response is itself another function call, not final text, and the existing one-hop code has nothing to execute it against. Confirmed via `final_response.function_calls` that this is a gap in the code's fixed round-trip shape, not a model reasoning failure - the model had already correctly worked out it needed both tools.
 
-**What I'd improve:**
-- Multi-tool sequential questions currently fail outright (see Outcome). Needs a loop that keeps sending results back to the model and checking for further function calls until a text-only response arrives - the ReAct pattern.
-- `resolve_set_score` currently returns bare status strings ('Win', 'Tiebreak') with no player identifier - fine for a single-tool test, but the model needs to know *who* won, not just that someone did, once this feeds into a real conversation.
+**Update: ReAct loop + third tool**
 
-**Additional concepts covered:**
-- Registering multiple function declarations on one `Tool` and dispatching execution by name
-- The difference between comparing a function's name (a string) and comparing the function object itself
-- Building a fully deterministic, network-free tool and testing it exhaustively against enumerated edge cases, versus an I/O-bound tool that can only be spot-checked
-- Diagnosing a multi-hop tool-calling limitation by inspecting the second response's `function_calls` rather than assuming the model chose wrong
+**Problem:** The previous fix (multi-tool dispatch) still only handled a *single* round of tool calls - the code built a `final_response` and printed it, but never fed it back in as the new `response` for a further round. A genuinely multi-hop question (needing tool A's result before deciding whether tool B is needed) had nowhere to go. Also needed a third tool that wasn't just another live API call, to prove tool-calling works for deterministic logic and local retrieval too, not only I/O-bound external services. **Approach:** Added `get_document_lookup` - a third tool that searches the existing `rag_foundation/documents.py` knowledge base for stored facts about a named player, returning a structured `player_not_found` error rather than an empty result when there's no match. Rebuilt the round-trip as a bounded ReAct loop: `for i in range(5): if not response.function_calls: break`, followed by the model handling and re-prompt. The final tool-response-collection line (`tool_response_parts.append(...)`) was moved inside the inner `for function_call in response.function_calls` loop rather than after it - the earlier version only kept the *last* tool's result when multiple tools were called in the same turn, which Gemini needs a response for every one of. **Outcome:** Tested against a deliberately three-tool question ("Is the match in London going to be delayed, who's ahead at 5-4, and is Federer the GOAT?"). Confirmed weather and scoring tools fire in parallel on the first round, the model correctly does *not* call `get_document_lookup` for the Federer question (it isn't in the stored `DOCUMENTS`, and the model answers from its own knowledge instead - proving tool-selection restraint, not just tool-selection success), and the loop cleanly exits via `break` once `function_calls` comes back empty.
+
+### What I'd improve
+- Multi-tool sequential questions now work via the ReAct loop, but there's no logging of *why* the model kept calling tools for several rounds - could log iteration count to catch a model that's just being inefficient (not stuck) at scale.
+- `resolve_set_score` currently returns bare status strings ('Win', 'Tiebreak') with no player identifier - fine for a single-tool test, but the model needs to know *who* won, not just that someone did, once this feeds into a real conversation.
+- `get_document_lookup` does a plain substring match on player name (`player.lower() in document['text'].lower()`) which would break on nicknames or partial names ("Federer" vs "Roger Federer" both work here by luck, but "Fed" wouldn't).
+- Still no rate limiting or backoff on the Gemini calls themselves - a `range(5)` cap limits *iterations per question*, not *calls per minute* against the free-tier quota.
+
+**Concepts covered:**
+- Manual function calling / tool use with the Gemini SDK
+- Testing tool-selection behaviour deliberately - confirming the model calls a tool when relevant, doesn't when it isn't, and can answer from its own knowledge when no tool applies
+- Structured, model-readable error responses from a tool function rather than raised exceptions
+- Geocoding as a two-step resolution (name → coordinates → data) before an external API call
+- The difference between a system prompt describing capabilities vs. restricting scope, and why the two aren't the same instruction
+- Building a fully deterministic, network-free tool (set scoring) and testing it against enumerated edge cases, versus an I/O-bound tool (weather) that can only be spot-checked, versus a local-retrieval tool (document lookup) that depends on data coverage
 - Translating a written rule into boundary conditions on the inputs, rather than a lookup table of specific cases seen during testing
+- The ReAct pattern implemented as a bounded loop (`for i in range(5)`), not just described conceptually
+- Diagnosing a multi-hop tool-calling limitation by inspecting a response's `function_calls` rather than assuming the model chose wrong
 
 ---
 
@@ -204,7 +217,7 @@ This is the first project in the repo where the model itself decides whether ext
 - `rag_chatbot/rag_api.py`- same RAG pipeline as an HTTP service, stateless per request, Pydantic-validated, with Redis cache-aside caching on `/output` (~145x faster on a cache hit vs miss). Uses `client.models.generate_content` (sync) and `client.models.embed_content` (sync, inside find_relevant_chunks) → correctly paired with plain def, letting FastAPI's thread pool handle it.
 - `rag_chatbot/rag_api.py` `/ws` - same pipeline again, now stateful per connection and fully async (`client.aio`), proving why sync calls inside `async def` WebSocket handlers block every other connected client.
 - `rag_chatbot/rag_api.py` `/output` (updated) - cache writes moved to `redis.asyncio` with `asyncio.create_task()`, so a cache miss no longer holds the response open waiting on the Redis write. Confirmed the write still completes reliably despite being fire-and-forget (5/5 fresh questions landed in Redis on manual testing). Benchmarked hit vs miss over N=10: ~0.050s hit average vs ~3.18s miss average, a ~64x speedup - lower than the earlier sync-write figure, most likely sample-size and outlier sensitivity rather than a real regression, and worth re-checking with a larger N or median instead of mean.
-- `tennis_tool_agent.py` - first tool-use / function-calling project. Model decides whether to call a live weather tool based on the question, tested explicitly for both directions (calls when relevant, doesn't when not). Manual function calling used throughout so the tool-selection step stays inspectable rather than hidden behind automatic execution. Updated to add a second, deterministic tool (set scoring tool) and dispatch-by-name across multiple registered tools. Testing a deliberately double-barreled question surfaced a real limitation: the current single-round-trip loop can't handle a question needing two sequential tool calls, since the model's second response is itself a function call rather than text - confirmed the model reasons correctly and the gap is in the code's shape, not tool selection, with the fix (a ReAct loop) planned next.
+- `tennis_tool_agent.py` - tool-use / function-calling project, now with three tools (live weather, deterministic set scoring, local document lookup) and a bounded ReAct loop (`for i in range(5)`) that lets the model chain multiple tool calls before answering. Confirmed via a deliberately three-tool question that the model calls tools in parallel where needed and correctly withholds a tool call when it can answer from its own knowledge instead.
 
 ---
 

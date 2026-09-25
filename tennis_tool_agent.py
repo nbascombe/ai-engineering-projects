@@ -3,6 +3,7 @@ from google import genai
 from dotenv import load_dotenv
 import os
 from google.genai import types
+from rag_foundation.documents import DOCUMENTS
 
 load_dotenv()
 
@@ -131,52 +132,108 @@ set_scoring_function = types.FunctionDeclaration(
     }
 )
 
-tool = types.Tool(function_declarations=[weather_function, set_scoring_function])
+def get_document_lookup(player):
+    if not player or not player.strip():
+        return {
+            "success": False,
+            "error": "invalid_player",
+            "message": "No player name was provided."
+        }
+    
+    related_documents = []
+    for document in DOCUMENTS:
+        if player.lower() in document['text'].lower():
+            related_documents.append(document['text'])
+
+    if related_documents:
+        return {
+            "success": True,
+            "related_documents": related_documents
+        }
+    
+    return {
+        "success": False,
+        "error": "player_not_found",
+        "message": f"No stored documents found matching '{player}'."
+    }
+
+document_lookup_function = types.FunctionDeclaration(
+    name= 'get_document_lookup',
+    description="Given a player's name return the stored fact(s) about them using the existing documents knowledge base",
+    parameters_json_schema={
+        "type": 'object',
+        "properties": {
+            "player": {
+                "type": 'string',
+                "description": 'The name of the player e.g. Serena Williams.'
+            }
+        },
+        "required": ["player"]
+    }
+)
+
+tool = types.Tool(function_declarations=[weather_function, set_scoring_function, document_lookup_function])
+tool_hander = {
+    "match_delay_risk_from_weather": match_delay_risk_from_weather, 
+    "resolve_set_score": resolve_set_score, 
+    "get_document_lookup": get_document_lookup
+    }
 
 if __name__ == "__main__":
-    contents = ["Is the match in London going to be delayed, and who's ahead in the set at 5-4?"]
+    contents = ["Is the match in London going to be delayed, and who's ahead in the set at 5-4? Is Roger Federer the greatest tennis player of all time?"]
 
     response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-3.8-flash",
                 contents=contents,
                 config=types.GenerateContentConfig(
                     tools=[tool], 
-                    system_instruction=("You are a tennis assistant. Only answer questions related to tennis e.g. "
-                    "players, tournaments, rules, history, and match conditions. You have access to a live weather "
-                    "tool, use it only when a tennis-relevant question needs current conditions to assess whether "
-                    "an outdoor match would be disrupted. If a question is not about tennis, politely say so and "
-                    "redirect the user back to tennis."
-)
+                    system_instruction=("You are a tennis assistant. "
+                    "Only answer questions related to tennis. "
+                    "Use tools when they provide information you need. "
+                    "After receiving a tool result, decide whether another "
+                    "tool call is necessary before answering."
+                    )   
                 )
             )
 
     function_call = response.function_calls[0] if response.function_calls else None
 
-    if function_call:
-        print(f"[tool called: {function_call.name}({function_call.args})]")
-        if function_call.name == weather_function.name:
-            result = match_delay_risk_from_weather(**function_call.args)
-        elif function_call.name == set_scoring_function.name:
-            result = resolve_set_score(**function_call.args)
-        else:
-            result = {"success": False, "error": "unknown_tool", "message": f"No handler for {function_call.name}"}
-
-        function_response_part = types.Part.from_function_response(
-            name=function_call.name,
-            response={"result": result}
-        )
+    for i in range(5):
+        if not response.function_calls:
+            break
 
         # append the model's turn (the function call) and your reply (the result) to the conversation
         contents.append(response.candidates[0].content)
-        contents.append(types.Content(role="user", parts=[function_response_part]))
+        tool_response_parts = []
 
-        final_response = client.models.generate_content(
-            model="gemini-2.5-flash",
+        for function_call in response.function_calls:
+            print(f"[tool called: {function_call.name}({function_call.args})]")
+            handler = tool_hander.get(function_call.name)
+
+            if handler:
+                result = handler(**function_call.args)
+            else:
+                result = {"success": False, "error": "unknown_tool", "message": f"No handler for {function_call.name}"}
+
+            tool_response_parts.append(types.Part.from_function_response(
+                        name=function_call.name,
+                        response={"result": result}
+                    ))
+
+        contents.append(types.Content(role="user", parts=tool_response_parts))
+
+        response = client.models.generate_content(
+            model="gemini-3.8-flash",
             contents=contents,
-            config=types.GenerateContentConfig(tools=[tool])
+            config=types.GenerateContentConfig(
+                tools=[tool], 
+                system_instruction="You are a tennis assistant. "
+                "Only answer questions related to tennis. "
+                "Use tools when necessary. "
+                "After each tool result, determine whether you "
+                "need another tool before giving the final answer.")
         )
-        print(final_response.function_calls)
-        print(final_response.text)
     else:
-        print("[no tool called]")
-        print(response.text)
+        print("[stopped: hit max iterations before a final answer]")
+
+    print(response.text or "[no final text returned]")
