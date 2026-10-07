@@ -12,12 +12,13 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import redis.asyncio as redis
 import asyncio
+from langsmith import wrappers, traceable
 
 load_dotenv()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+client = wrappers.wrap_gemini(genai.Client(api_key=os.getenv("GOOGLE_API_KEY")))
 
 r = redis.Redis(decode_responses=True)
 
@@ -50,6 +51,7 @@ def chunk_document(document):
     print(f"Total chunks: {len(chunks)}")
     return chunks
 
+@traceable(run_type="embedding", name="embed_text")
 def embed_text(text): 
     """Embed a string using Gemini and return a list of floats."""
     result = client.models.embed_content(
@@ -85,6 +87,7 @@ def load_or_build_collection(chromadb_client, chunks):
         print("No existing collection found — building now...")
         return embed_and_store(chunks, chromadb_client)
 
+@traceable(run_type="retriever", name="retrieve_chunks")
 def find_relevant_chunks(question, collection, n_results=3):
     """For an embedded question query the ChromaDB collection and return the n top results."""
     question_embedding = embed_text(question)
@@ -102,6 +105,7 @@ def build_prompt(context, question):
     
     Question: {question}"""
 
+@traceable(name="rag_request")
 async def generate_tokens(question):
     cache_key = question.content.lower()
     cache_response = await r.get(cache_key)
@@ -116,9 +120,10 @@ async def generate_tokens(question):
         )
         chunks = []
         for chunk in response:
-            yield chunk.text
-            chunks.append(chunk.text)
-        chunks_string = " ".join(chunks)
+            if chunk.text:
+                yield chunk.text
+                chunks.append(chunk.text)
+        chunks_string = "".join(chunks)
         task = asyncio.create_task(r.set(cache_key, chunks_string, ex=6000))
 
 

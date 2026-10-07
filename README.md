@@ -208,6 +208,19 @@ This is the first project in the repo where the model itself decides whether ext
 
 ---
 
+### 9. LangSmith Tracing (`rag_chatbot/rag_api.py`)
+**Problem:** The RAG API had several internal steps and I could only judge it by its final answers, so I couldn't tell whether a bad or slow answer came from retrieval, generation or the cache.
+**Approach:** Added LangSmith tracing: a wrapped Gemini client plus `@traceable` decorators on the request, retrieval and embedding steps, producing a nested trace per request.
+**Outcome:** Found a cache bug (chunks joined mid-word) and diagnosed an incomplete-answer problem as a retrieval ranking failure (the rule chunk ranked 4th at k=3), not a hallucination. Retrieval time was dominated by the embedding call, not the vector search. Details in `rag_chatbot/README.md`, section 5.
+
+**Concepts covered:**
+- Traces and runs, and mapping a pipeline onto them
+- Instrumenting a framework-free pipeline
+- Distinguishing retrieval failures from generation failures
+- Context recall vs faithfulness
+
+---
+
 ## Technical Progression
 - `basic_chatbot.py` - stateless, single call, no memory
 - `tennis_analyst_bot.py` - stateful, conversational, structured JSON outputs, validated responses
@@ -232,6 +245,7 @@ This is the first project in the repo where the model itself decides whether ext
 - Uvicorn
 - Redis
 - Open-Meteo API (weather + geocoding, no key required)
+- LangSmith (tracing)
 
 ---
 
@@ -258,6 +272,11 @@ pip install -r requirements.txt
 5. Create a `.env` file in the root folder
 ```
 GOOGLE_API_KEY=your-key-here
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=your-langsmith-key
+LANGSMITH_PROJECT=tennis-rules-bot
+# Only if your LangSmith account is on the EU region:
+LANGSMITH_ENDPOINT=https://eu.api.smith.langchain.com
 ```
 
 6. Run a project

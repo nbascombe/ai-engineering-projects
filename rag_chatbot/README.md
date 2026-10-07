@@ -72,6 +72,7 @@ The baseball example demonstrates the system correctly refusing to answer outsid
 
 ## 2. API - `rag_api.py`
 
+*(Superseded: `/output` is now `async def` with an async Redis client. See section 4's async-writes update. The reasoning below explains the original design.)*
 **Problem:** A CLI tool can only be used by one person, in one terminal, at a time. Wrapping the same RAG pipeline as an HTTP service makes it usable by any client - a frontend, another service, or multiple simultaneous users - without each of them needing Python installed locally.
 **Approach:** FastAPI service built on the same retrieval functions as the CLI (`find_relevant_chunks`, `build_prompt`, `load_or_build_collection`). The ChromaDB collection is built once at startup via FastAPI's `lifespan` context manager and shared across all requests through `app.state`, rather than being rebuilt per request. Each request is answered with a single stateless `generate_content` call rather than a persistent chat session, since REST endpoints don't inherently carry state between calls and the endpoint currently has no mechanism for a client to signal "this is a follow-up." Requests are validated with a Pydantic model that strips whitespace and rejects empty input.
 **Outcome:** A running HTTP service, testable via FastAPI's built-in Swagger UI at `/docs`, that returns grounded, accurate answers on in-scope questions and correctly refuses out-of-scope ones - matching the CLI's grounding behaviour. Confirmed via manual testing that the endpoint does **not** retain conversation history across requests (see below).
@@ -203,7 +204,7 @@ real 0m0.034s
 
 **Cache key: normalised question text, not the raw string** - the first implementation used the raw `question.content` as the Redis key, which meant `"What is a tiebreak?"` and `"what is a tiebreak?"` were treated as two different entries. Found this by inspecting `redis-cli KEYS *` and seeing a lookup miss on a key I could see was clearly stored. Fixed by lowercasing with `.lower()` before both the `r.get` and `r.set` calls, so casing no longer fragments the cache. Surrounding whitespace is already handled upstream — the Pydantic `field_validator` on `Question.content` strips it before the request reaches this function — so the cache key doesn't need its own `.strip()` call on top of that.
 
-**Consuming the stream before caching, not caching the stream object** - `generate_content_stream` returns a live generator; it can't be handed directly to `r.set()` since Redis only stores primitive types. Instead, each `chunk.text` is yielded to the client *and* appended to a list as it arrives, then joined into a single string (`" ".join(chunks)`) once the stream is exhausted, that string is what gets cached.
+**Consuming the stream before caching, not caching the stream object** - `generate_content_stream` returns a live generator; it can't be handed directly to `r.set()` since Redis only stores primitive types. Instead, each `chunk.text` is yielded to the client *and* appended to a list as it arrives, then joined with `"".join(chunks)` once the stream is exhausted. Joining with a space was an early bug: Gemini's chunks are slices of one continuous string and can split mid-word ("Tie" / "-Break"), so a space-joined cache entry read "Tie -Break" and differed from the streamed answer. Found by comparing LangSmith's recorded chunk boundaries against `redis-cli GET`.
 
 **Cache hit yields once, not chunk-by-chunk** - the miss branch streams token-by-token as Gemini generates them; the hit branch yields the whole cached string in a single `yield`. This is a deliberate asymmetry: the client only needs the correct final text delivered as *a* stream, not the exact same chunk boundaries the original generation happened to produce.
 
@@ -257,12 +258,58 @@ Measured with `time curl`, N=10 per case, wall-clock `real` time:
 
 ---
 
+## 5. Observability - LangSmith tracing on `/output`
+
+**Problem:** The pipeline had several steps (cache check, embed, retrieve, generate) and I was judging it only by the final answer. When an answer was wrong or slow, I couldn't tell which step caused it.
+**Approach:** Added LangSmith tracing. The Gemini client is wrapped with `wrappers.wrap_gemini` (beta), and `@traceable` decorators on `generate_tokens` (root run `rag_request`), `find_relevant_chunks` (`retrieve_chunks`, run type retriever) and `embed_text`. Nesting is automatic, so one request becomes one trace.
+**Outcome:** Each request now produces a trace tree:
+
+```
+rag_request
+├── retrieve_chunks
+│   └── embed_text
+└── ChatGoogleGenerativeAI (the Gemini call)
+```
+
+- **Latency split.** On a representative cache miss (7.43s total), embedding took 1.62s and generation 5.42s, so the ChromaDB query itself was only ~0.14s. Other misses ranged from ~3s to ~7s, so generation latency is the most variable cost. A cache hit is a single run with no children (~0.00s).
+- **A cache bug found via traces.** Comparing the recorded stream chunks against the stored Redis value showed that `" ".join(chunks)` corrupted cached answers ("Tie -Break"). Fixed with `"".join(chunks)`.
+- **A retrieval problem found via traces.** "What is a tiebreak?" kept giving incomplete, inconsistent answers. The trace showed the three retrieved chunks were the match tie-break and short-set variants, not the standard set tie-break rule. A diagnostic script (`check_retrieval.py`) showed that rule chunk (`chunk_5`) ranks 4th for "what is a tiebreak?" and "When is a tie-break played?", but 1st for "What happens when a set reaches 6-6?". The model's answers were faithful to the retrieved context, so this is a context-recall failure at k=3, not a hallucination.
+
+### Technical decisions
+
+**`wrap_gemini` plus `@traceable`, not LangChain chains.** The project calls the `google-genai` SDK directly, so nothing is traced automatically. The wrapper captures the generation call, and decorators cover the steps I wrote myself.
+**Free-tier constraints.** The free Developer plan has a monthly trace cap and 14-day retention, so findings worth keeping are recorded here and in my notes rather than relying on the trace history.
+
+### What I'd improve
+
+- Retrieval is wording-sensitive and the PDF says "six games all" while users type "6-6". Candidates: smaller chunks with more overlap, query rewriting, hybrid keyword search.
+- Cached answers are served for the full TTL, so a weak answer is frozen for 100 minutes. Consider not caching refusals or low-confidence answers.
+- The same question gave different answers across runs. Evals should run each question several times, and `temperature` could be lowered.
+- `/ws` is not traced. Each message needs its own traced function, with a shared thread ID to group a conversation.
+- `find_relevant_chunks` (sync embed + Chroma query) still runs inside an `async def` route and blocks the event loop. Given that embedding is ~90% of retrieval time, `asyncio.to_thread()` is the obvious next fix.
+
+### Concepts covered
+
+- Traces vs runs: one request is one trace, made of nested runs
+- Instrumenting code that doesn't use a framework (`@traceable`, `wrap_gemini`)
+- Diagnosing retrieval vs generation failures from a trace
+- Faithfulness vs context recall: a faithful answer can still be wrong if retrieval missed the key chunk
+- Region-specific API endpoints (the EU endpoint fixed a 403 on trace ingestion)
+- Why caching can freeze a bad answer, and why checking cache-hit text against miss text matters
+
+---
+
 ## Prerequisites
 
 - A Google Gemini API key - get one at aistudio.google.com
 - Create a `.env` file in the repo root:
 ```
 GOOGLE_API_KEY=your-key-here
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=your-langsmith-key
+LANGSMITH_PROJECT=tennis-rules-bot
+# Only if your LangSmith account is on the EU region:
+LANGSMITH_ENDPOINT=https://eu.api.smith.langchain.com
 ```
 
 ## How to run
