@@ -221,6 +221,20 @@ This is the first project in the repo where the model itself decides whether ext
 
 ---
 
+### 10. Eval Harness (`rag_chatbot/eval_rag.py`)
+**Problem:** I was judging the RAG bot by eyeballing answers, so I couldn't say how often it was right or whether a failure came from retrieval or generation.
+**Approach:** An eval harness over 15 hand-written questions that scores retrieval (does the right chunk reach the model?) and generation (is the answer right?) separately. It reuses the production pipeline code, treats API errors as errors not failures, and caches answers so quota-limited reruns only pay for what is missing.
+**Outcome:** At the production setting (k=3), retrieval hit 9/13 and answers scored 11/15. Every failure traced back to retrieval, caused by vocabulary the PDF doesn't use, compound questions and answers buried in example cases. At k=8, retrieval hit 13/13 and answers scored 15/15 with no regressions and both out-of-scope refusals intact. k=8 was chosen using the same questions and sends about 2.7x the context per query, so the API is unchanged until it is tested on fresh questions. Details in `rag_chatbot/README.md`, section 6.
+
+**Concepts covered:**
+- Separating retrieval metrics from generation metrics
+- Designing an eval set for coverage and avoiding tuning to the test set
+- Validating the evaluator itself (expected phrases, reading raw answers)
+- Treating API errors separately from model failures
+- Caching and call budgets for quota-limited evaluation
+
+---
+
 ## Technical Progression
 - `basic_chatbot.py` - stateless, single call, no memory
 - `tennis_analyst_bot.py` - stateful, conversational, structured JSON outputs, validated responses
@@ -231,6 +245,7 @@ This is the first project in the repo where the model itself decides whether ext
 - `rag_chatbot/rag_api.py` `/ws` - same pipeline again, now stateful per connection and fully async (`client.aio`), proving why sync calls inside `async def` WebSocket handlers block every other connected client.
 - `rag_chatbot/rag_api.py` `/output` (updated) - cache writes moved to `redis.asyncio` with `asyncio.create_task()`, so a cache miss no longer holds the response open waiting on the Redis write. Confirmed the write still completes reliably despite being fire-and-forget (5/5 fresh questions landed in Redis on manual testing). Benchmarked hit vs miss over N=10: ~0.050s hit average vs ~3.18s miss average, a ~64x speedup - lower than the earlier sync-write figure, most likely sample-size and outlier sensitivity rather than a real regression, and worth re-checking with a larger N or median instead of mean.
 - `tennis_tool_agent.py` - tool-use / function-calling project, now with three tools (live weather, deterministic set scoring, local document lookup) and a bounded ReAct loop (`for i in range(5)`) that lets the model chain multiple tool calls before answering. Confirmed via a deliberately three-tool question that the model calls tools in parallel where needed and correctly withholds a tool call when it can answer from its own knowledge instead.
+- `rag_chatbot/eval_rag.py` - eval harness for the RAG bot: retrieval and generation scored separately over 15 questions, answer cache and call budget for the free tier. k=3 scored 11/15 end to end with all failures traced to retrieval; k=8 scored 15/15 on the same set (not yet validated on fresh questions).
 
 ---
 
@@ -286,6 +301,8 @@ python tennis_analyst_bot.py
 python -m rag_foundation.rag_foundation
 python -m rag_chatbot.rag_chatbot
 python tennis_tool_agent.py
+python -m rag_chatbot.eval_rag --retrieval-only
+python -m rag_chatbot.eval_rag --runs 1 --label baseline_k3
 ```
 FastAPI service (runs on http://localhost:8000):
 ```

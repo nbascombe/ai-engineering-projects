@@ -56,7 +56,7 @@ The baseball example demonstrates the system correctly refusing to answer outsid
 
 - Add a confidence score to surface low-similarity retrievals before passing to the LLM
 - Experiment with smaller chunk sizes (600–800 chars) to improve precision on specific rule numbers
-- Add an eval harness against a set of ground-truth Q&A pairs to measure retrieval accuracy systematically
+- Add an eval harness against a set of ground-truth Q&A pairs to measure retrieval accuracy systematically (Done in section 6 below: Evaluation - eval harness for TennisRulesBot)
 
 ### Concepts covered
 
@@ -299,6 +299,80 @@ rag_request
 
 ---
 
+## 6. Evaluation - eval harness for TennisRulesBot
+
+**Problem:** I was judging the bot by eyeballing answers, so I couldn't say how often it was right, or whether a wrong answer came from retrieval (the right chunk never reached the model) or generation (the model had it and still got it wrong).
+**Approach:** Built an eval harness (`eval_rag.py`) over 15 hand-written questions in `eval_set.json`. Each question has keyword checks for the answer and, where applicable, an `expected_phrase` that identifies the source chunk, so retrieval and generation are scored separately. The set mixes wording mismatches, numeric lookups, a question whose answer differs for wheelchair tennis, a multi-part question, a scenario question, and two out-of-scope questions (one clearly unrelated, one a tennis question the rules can't answer). It reuses the API's retrieval and prompt code, bypasses the Redis cache, and records API errors as errors, not failures.
+**Outcome:** At the production setting (k=3) the bot scored 11/15 end to end, and every failure traced back to retrieval. Raising k to 8 recovered all four failures with no regressions, at about 2.7x the context per query. I haven't changed the API to k=8 (see below). One run per question.
+
+| | k=3 (production) | k=8 |
+|---|---|---|
+| Retrieval hit rate | 9/13 | 13/13 |
+| End-to-end, keyword scoring | 11/15 | 15/15 |
+| End-to-end, after reading answers | 9 clean, 2 partial, 4 failed | the 4 failures fixed, same 2 partials |
+| Out-of-scope (Q10, Q15) | 2/2 refused | 2/2 refused |
+
+At k=3, when retrieval found the right chunk the answer was right (9/9 passed the check, 7 fully clean). When it didn't, the answer was wrong (0/4). Retrieval is the bottleneck, not generation.
+
+### Why retrieval missed
+
+At k=3 the answer chunk ranked 5th to 8th for every miss (Q4 5th, Q1 and Q8 6th, Q12 7th, Q13 8th). Three causes:
+- **Vocabulary the PDF doesn't use.** Users say "tiebreak" and "double fault"; the rules say "tie-break game" and "serves two consecutive faults".
+- **Compound questions.** Q12 asks two things and its chunk ranked 7th, while a simple question hitting the same chunk (Q7) ranked it 3rd.
+- **Answers inside example cases.** Q13's answer sits in a Case under Rule 23, not in the rule text.
+
+### How the four k=3 failures failed
+
+| Q | What the bot did | Failure type |
+|---|---|---|
+| 1 | Said the context gives no general definition of a tie-break | Honest partial refusal |
+| 13 | "The answer is not in the context." | Clean refusal |
+| 4 | Said a serve touching the net is good and playable | Confident wrong answer: used the optional No-Let rule from Appendix VI instead of Rule 22 (service let), presenting it as the answer to a question that never mentioned No-Let |
+| 8 | Echoed its own system instruction | Degenerate output |
+
+Refusals are the safe failure. The Q4 type, a confident answer from the wrong rule, is the one a user would believe.
+
+### Raising k: k=3 vs k=8
+
+Retrieval-only runs on the first nine questions gave 6/9 at k=3, 7/9 at k=5 and 9/9 at k=6, which made k=6 look like a full fix. Six questions written to be different in kind showed it wasn't: answer chunks ranked as deep as 8th, and k=8 (about 10% of the 86 chunks) was the smallest k with 13/13 retrieval. Generation at k=8 (15 fresh calls, 0 errors):
+- **Q4** now picked the standard Rule 22 (service let) even with the Appendix VI No-Let chunk in context.
+- **Q8 and Q13** gave clean, correct answers. Q8's echo didn't reappear, but that was one run, so it isn't proven fixed.
+- **Q1** passes on content but the answer is muddier than the others.
+- **Q6 and Q14** were unchanged. A bigger k fixes retrieval failures, not incomplete answers or lenient checks.
+- **Both refusals held** with 8 chunks in context.
+
+Why the API is unchanged: I chose k=8 by looking at this same set, so 15/15 is partly built in; it sends about 2.7x the context per query at a cost and latency I haven't measured; and one run on 15 questions shows a direction, not a precise gain. I read the answers for the changed and borderline questions (Q1, 4, 6, 8, 10, 13, 14, 15); the rest passed their keyword checks.
+
+### Technical decisions
+
+- **Retrieval and generation scored separately**, since a faithful answer can still be wrong if retrieval missed the key chunk.
+- **Errors are not failures.** Quota errors are excluded from accuracy, the run stops after 3 consecutive API errors, and incomplete questions are named in the report.
+- **Eval-only answer cache** (`eval_results/answer_cache.json`, git-ignored), keyed on model, system instruction, prompt and run index, so reruns only pay for missing answers. This kept the eval within the free tier's 20 generation calls per day.
+- **Expected phrases checked against the stored chunks** before trusting any retrieval number. All nine initial phrases existed, so the misses were real.
+
+### Limitations
+
+- 15 questions I wrote, partly adjusted after seeing results, and k=8 was chosen using the same set. This is a regression set, not a statistical estimate of real-world accuracy.
+- One run per question, and the model is non-deterministic.
+- Keyword scoring is crude: Q6 and Q14 passed without fully answering, and I only found that by reading the raw answers.
+- `expected_phrase` accepts one chunk, but the PDF repeats some facts, so Q12 was scored a retrieval miss despite being answered from another chunk. A refusal check on "not in the context" would also accept an echo of the system prompt.
+
+### What I'd improve
+
+- Write fresh held-out questions and run k=3 and k=8 on them before changing the API, and measure token cost and latency at k=8.
+- Judge retrieval by whether the context supports the answer, and use an LLM judge for answers. Reject degenerate outputs before scoring them as refusals.
+- Fix retrieval itself (query rewriting, smaller chunks or hybrid keyword search) so a smaller k works.
+- Run each question 3 times to measure variance, starting with Q4 and Q8.
+
+### Concepts covered
+
+- Separating retrieval metrics from generation metrics (context recall vs faithfulness)
+- Designing an eval set for coverage and avoiding tuning to the test set
+- Treating API errors separately from model failures
+- Validating the evaluator itself: checking expected phrases and reading raw answers
+
+---
+
 ## Prerequisites
 
 - A Google Gemini API key - get one at aistudio.google.com
@@ -328,10 +402,24 @@ uvicorn rag_chatbot.rag_api:app --reload
 ```
 Test via the built-in docs UI at http://localhost:8000/docs
 
+Eval harness (see section 6):
+```
+python -m rag_chatbot.eval_rag --retrieval-only          # no generation calls
+python -m rag_chatbot.eval_rag --retrieval-only --k 8
+python -m rag_chatbot.eval_rag --runs 1 --label baseline_k3
+python -m rag_chatbot.eval_rag --runs 1 --k 8 --label k8
+python -m rag_chatbot.eval_rag --compare <before.json> <after.json>
+```
+
 ## Files
 
 - `rag_chatbot.py` - CLI pipeline and chat loop, stateful across a terminal session
 - `rag_api.py` - FastAPI service exposing the same retrieval pipeline over HTTP, stateless per request, with cache-aside caching on `/output`
-- `documents/2026-ITF-Rules-of-Tennis.pdf` - the ITF Rules of Tennis
+- `documents/2026-rules-of-tennis-english.pdf` - the ITF Rules of Tennis
 - `chroma_db/` - generated on first run, not committed to git
 - `static/websocket_client.html` - minimal HTML/JS test client for the `/ws` endpoint
+- `eval_rag.py` - eval harness: scores retrieval and generation separately, with an answer cache and call budget
+- `eval_set.json` - the 15 eval questions with expected phrases and keyword checks
+- `eval_results/` - saved eval reports (the answer cache in here is git-ignored)
+- `rag_common.py` - generic code to be shared e.g. model, system instruction, LLM log call
+- `logs/` - structured logging of every call (token count, response and latency)
