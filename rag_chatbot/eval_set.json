@@ -1,0 +1,202 @@
+[
+  {
+    "id": 1,
+    "type": "wording_mismatch",
+    "question": "What is a tiebreak?",
+    "expected_answer": "A tie-break game is won by the first player/team to win seven points, provided they lead by a margin of two points; it continues until that margin is reached.",
+    "must_contain": [
+      ["seven", "7"],
+      ["two", "2"]
+    ],
+    "expected_phrase": "seven points wins the",
+    "should_refuse": false,
+    "source": "Rule 5b",
+    "note": "Wording mismatch: the answer chunk (chunk_3) ranks 6th for this question, so it misses at k=3 and k=5 and only hits at k=6."
+  },
+  {
+    "id": 2,
+    "type": "wording_mismatch",
+    "question": "What happens when a set reaches 6-6?",
+    "expected_answer": "A tie-break game is played (when the tie-break set method is used).",
+    "must_contain": [
+      ["tie-break", "tiebreak", "tie break"]
+    ],
+    "expected_phrase": "six games all, a tie-break game shall be played",
+    "should_refuse": false,
+    "source": "Rule 6b",
+    "note": "Related to Q1 (Rule 5b defines the tie-break; Rule 6b says when it starts), but phrased close to the PDF's own wording. Ranked 1st in check_retrieval.py, so it is the control for Q1."
+  },
+  {
+    "id": 3,
+    "type": "numeric",
+    "question": "How often do players change ends during a tie-break game?",
+    "expected_answer": "After every six points.",
+    "must_contain": [
+      ["six points", "6 points", "every six", "every 6"]
+    ],
+    "expected_phrase": "change ends after every six points",
+    "should_refuse": false,
+    "source": "Rule 10",
+    "note": "Terms tightened to 'six points' phrasing: a bare 'six'/'6' would also match an answer about the 6-6 start score."
+  },
+  {
+    "id": 4,
+    "type": "lookup",
+    "question": "What happens if a serve hits the net but still lands in the correct service box?",
+    "expected_answer": "It is a service let: that service does not count and the server serves again (a service let does not cancel a previous fault).",
+    "must_contain": [
+      ["let"],
+      ["again", "replay", "re-serve", "reserve", "not count"]
+    ],
+    "expected_phrase": "touches the net, strap or band, and is otherwise good",
+    "should_refuse": false,
+    "source": "Rule 22",
+    "note": "At k=3 the bot answered from the optional No-Let rule (Appendix VI) as if it applied, instead of the standard Rule 22 service let. The keyword check already fails this: 'let' matches inside 'No-Let' but nothing from the second group does."
+  },
+  {
+    "id": 5,
+    "type": "lookup",
+    "question": "Is the server allowed to touch the baseline while serving?",
+    "expected_answer": "No. Touching the baseline or the court with either foot during the service motion is a foot fault.",
+    "must_contain": [
+      ["foot fault", "fault"],
+      ["no", "not", "cannot", "may not", "shall not"]
+    ],
+    "expected_phrase": "touch the baseline or the court with either foot",
+    "should_refuse": false,
+    "source": "Rule 18b"
+  },
+  {
+    "id": 6,
+    "type": "lookup",
+    "question": "If a ball lands on the line, is it in or out?",
+    "expected_answer": "It is in: a ball that touches a line is regarded as touching the court bounded by that line.",
+    "must_contain": [
+      ["is in", "considered in", "counts as in", "good", "regarded as touching the court", "bounded by that line", "court bounded"]
+    ],
+    "expected_phrase": "regarded as touching the court bounded by that line",
+    "should_refuse": false,
+    "source": "Rule 12",
+    "note": "Answer is a judgement word ('in'), so substring matching is weak here. Candidate for an LLM judge later."
+  },
+  {
+    "id": 7,
+    "type": "numeric",
+    "question": "How many seconds are players allowed between points?",
+    "expected_answer": "A maximum of 25 seconds.",
+    "must_contain": [
+      ["25", "twenty-five", "twenty five"]
+    ],
+    "expected_phrase": "maximum of twenty-five (25) seconds",
+    "should_refuse": false,
+    "source": "Rule 29a"
+  },
+  {
+    "id": 8,
+    "type": "wording_mismatch",
+    "question": "What happens on a double fault?",
+    "expected_answer": "Serving two consecutive faults means the server loses the point.",
+    "must_contain": [
+      ["point"],
+      ["lose", "loses", "lost", "receiver wins", "opponent wins"]
+    ],
+    "expected_phrase": "serves two consecutive faults",
+    "should_refuse": false,
+    "source": "Rule 24a",
+    "note": "Your CLI README shows the bot said the context did not contain 'double fault'. The PDF never uses that term, so this tests the same wording gap as Q1. The harness now also fails answers that echo the system instruction (seen on this question at k=3)."
+  },
+  {
+    "id": 9,
+    "type": "numeric",
+    "question": "How many sets does a player need to win to win a best-of-five match?",
+    "expected_answer": "Three sets.",
+    "must_contain": [
+      ["three", "3"]
+    ],
+    "expected_phrase": "best of 5 sets (a player/team needs to win 3 sets",
+    "should_refuse": false,
+    "source": "Rule 7"
+  },
+  {
+    "id": 10,
+    "type": "out_of_scope",
+    "question": "What is the offside rule in football?",
+    "expected_answer": "Refusal: the rules of tennis do not contain this information.",
+    "must_contain": [],
+    "expected_phrase": null,
+    "should_refuse": true,
+    "source": null
+  },
+  {
+    "id": 11,
+    "type": "variant_rules",
+    "question": "Can the ball bounce twice before I hit it?",
+    "expected_answer": "No. A player who does not return the ball before it bounces twice consecutively loses the point. (Wheelchair tennis is the exception: two bounces are allowed.)",
+    "must_contain": [
+      ["lose", "loses", "lost"],
+      ["point"],
+      ["wheelchair"]
+    ],
+    "expected_phrase": "does not return the ball in play before it bounces twice consecutively",
+    "should_refuse": false,
+    "source": "Rule 24b",
+    "note": "Answer depends on who is playing: the standard rule says a second bounce loses the point, but wheelchair tennis allows two. The wheelchair chunk is semantically very close, so it competes for a retrieval slot. A good answer gives the standard rule and mentions the wheelchair exception; an answer that only says two bounces are fine is wrong for able-bodied play. Read these answers by hand."
+  },
+  {
+    "id": 12,
+    "type": "multi_part",
+    "question": "How long can players rest when they change ends, and how long is the break between sets?",
+    "expected_answer": "A maximum of 90 seconds when changing ends at the end of a game, and a maximum of 120 seconds at the end of a set.",
+    "must_contain": [
+      ["90", "ninety"],
+      ["120", "one hundred and twenty", "hundred and twenty"]
+    ],
+    "expected_phrase": [
+    "ninety (90) seconds",
+    "one hundred and twenty (120) seconds"
+    ],
+    "phrase_match": "all",
+    "should_refuse": false,
+    "source": "Rule 29a",
+"note": "Needs two facts that may sit in different chunks, so retrieval requires BOTH phrases (phrase_match 'all'). The first phrase was widened from 'a maximum of ninety (90) seconds' after the k=3 answer proved to be grounded in a different retrieved chunk that states the 90 seconds in other words."
+  },
+  {
+    "id": 13,
+    "type": "scenario",
+    "question": "What happens if a stray ball rolls onto the court during a point?",
+    "expected_answer": "A let is called and the whole point is replayed.",
+    "must_contain": [
+      ["let"],
+      ["replay", "replayed", "played again", "again"]
+    ],
+    "expected_phrase": "another ball rolls onto court",
+    "should_refuse": false,
+    "source": "Rule 23, Case 1",
+    "note": "Scenario wording ('stray ball', 'rolls') with no rule name. The answer lives in a Case example under Rule 23, not in the rule text itself."
+  },
+  {
+    "id": 14,
+    "type": "procedure",
+    "question": "Who decides who serves first in a match?",
+    "expected_answer": "A toss before the warm-up. The winner chooses to serve or receive (opponent then picks the end), or chooses an end (opponent then picks serve/receive), or can make the opponent choose.",
+    "must_contain": [
+      ["toss"]
+    ],
+    "expected_phrase": "decided by toss before the warm-up starts",
+    "should_refuse": false,
+    "source": "Rule 9",
+    "note": "The rule is titled 'Choice of ends and service' and never says 'who serves first'. Check whether the answer also mentions the winner's choices, not just the toss."
+  },
+  {
+    "id": 15,
+    "type": "out_of_scope_near_miss",
+    "question": "Who won the men's singles title at Wimbledon in 2023?",
+    "expected_answer": "Refusal: the rules document says nothing about tournament results.",
+    "must_contain": [],
+    "must_not_contain": ["Alcaraz"],
+    "expected_phrase": null,
+    "should_refuse": true,
+    "source": null,
+    "note": "A tennis question the rules PDF can't answer, so the model is tempted to answer from its own knowledge. must_not_contain fails a reply that names the winner even if it also says 'not in the context'."
+  }
+]

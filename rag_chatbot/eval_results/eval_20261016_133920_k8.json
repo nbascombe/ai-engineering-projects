@@ -1,0 +1,417 @@
+{
+  "timestamp": "2026-10-16T13:39:20",
+  "label": "k8",
+  "config": {
+    "model": "gemini-2.5-flash",
+    "k": 8,
+    "runs_per_question": 1,
+    "delay_s": 7.0,
+    "max_calls": 18,
+    "cache_used": true
+  },
+  "summary": {
+    "retrieval_hit_rate": "13/13",
+    "answer_accuracy_strict": "15/15 complete questions",
+    "answer_pass_rate_per_run": "15/15 scored runs",
+    "errored_runs": 0,
+    "incomplete_questions": [],
+    "new_api_calls": 0,
+    "answers_from_cache": 15,
+    "median_latency_s": null,
+    "mean_prompt_tokens": null,
+    "mean_output_tokens": null,
+    "mean_context_chars": 7322
+  },
+  "results": [
+    {
+      "id": 1,
+      "type": "wording_mismatch",
+      "question": "What is a tiebreak?",
+      "retrieval_hit": true,
+      "retrieval_rank": 6,
+      "retrieval_s": 0.732,
+      "context_chars": 7476,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "A tie-break is a game where points are scored \"Zero\", \"1\", \"2\", \"3\", etc.\n\nThere are several types of tie-breaks described:\n\n*   **General Tie-break Game:** The first player/team to win seven points wins the \"Game\" and \"Set\", provided there is a margin of two points over the opponent(s). This type of tie-break game is played if the score in a \"Tie-break Set\" reaches six games all.\n*   **Short Set Tie-break (5 points):** Used when playing Short Sets only. The first player/team to win five points wins the \"Game\" and \"Set\", with a deciding point if the score reaches four all.\n*   **Match Tie-break (7 points or 10 points):** This tie-break game may be played to decide the match when the score in a match is one set all, or two sets all in best of five sets matches. It replaces the deciding final set. The first player/team to win seven or ten points, respectively, shall win the match tie-break and the match, provided there is a margin of two points over the opponent(s).\n*   **Final Set Tie-break (10 points):** May be played to decide the match when the score in a match is one set all, or two sets all in a best of five sets match, and six games all in the final set. The first player/team to win ten points shall win the tie-break and the match provided there is a margin of two points over the opponent(s).",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": null,
+          "prompt_tokens": null,
+          "output_tokens": null
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "wording_mismatch",
+      "question": "What happens when a set reaches 6-6?",
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "retrieval_s": 0.451,
+      "context_chars": 8319,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "When a set reaches 6-6 (six games all):\n\n*   In an **\"Advantage Set\"**, the set shall continue until one player/team has a margin of two games over the opponent(s).\n*   In a **\"Tie-break Set\"**, a tie-break game shall be played.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": null,
+          "prompt_tokens": null,
+          "output_tokens": null
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "numeric",
+      "question": "How often do players change ends during a tie-break game?",
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "retrieval_s": 0.25,
+      "context_chars": 7486,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "During a tie-break game, players shall change ends after every six points.\n\nHowever, for a Final Set Tie-Break (10 points), players shall change ends after the first point and thereafter after every four points.\n\nFor a Short Set Tie-Break (5 points), players/teams will only change ends after the first four points have been played.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": null,
+          "prompt_tokens": null,
+          "output_tokens": null
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "lookup",
+      "question": "What happens if a serve hits the net but still lands in the correct service box?",
+      "retrieval_hit": true,
+      "retrieval_rank": 5,
+      "retrieval_s": 0.276,
+      "context_chars": 6488,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "If a serve touches the net, strap or band, and is otherwise good (meaning it lands within the correct service box), it is a service let. That particular service shall not count, and the server shall serve again.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": null,
+          "prompt_tokens": null,
+          "output_tokens": null
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "lookup",
+      "question": "Is the server allowed to touch the baseline while serving?",
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "retrieval_s": 0.512,
+      "context_chars": 8100,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "No, the server is not allowed to touch the baseline with either foot during the service motion. If the server does, it is a \"Foot Fault.\"",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": null,
+          "prompt_tokens": null,
+          "output_tokens": null
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "lookup",
+      "question": "If a ball lands on the line, is it in or out?",
+      "retrieval_hit": true,
+      "retrieval_rank": 3,
+      "retrieval_s": 0.275,
+      "context_chars": 4931,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "If a ball touches a line, it is regarded as touching the court bounded by that line.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": null,
+          "prompt_tokens": null,
+          "output_tokens": null
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "numeric",
+      "question": "How many seconds are players allowed between points?",
+      "retrieval_hit": true,
+      "retrieval_rank": 3,
+      "retrieval_s": 0.512,
+      "context_chars": 7148,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "Between points, a maximum of twenty-five (25) seconds is allowed.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": null,
+          "prompt_tokens": null,
+          "output_tokens": null
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "wording_mismatch",
+      "question": "What happens on a double fault?",
+      "retrieval_hit": true,
+      "retrieval_rank": 6,
+      "retrieval_s": 0.265,
+      "context_chars": 7059,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "The point is lost if the player serves two consecutive faults.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": null,
+          "prompt_tokens": null,
+          "output_tokens": null
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "numeric",
+      "question": "How many sets does a player need to win to win a best-of-five match?",
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "retrieval_s": 0.565,
+      "context_chars": 7473,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "To win a best-of-five match, a player/team needs to win 3 sets.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": null,
+          "prompt_tokens": null,
+          "output_tokens": null
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "out_of_scope",
+      "question": "What is the offside rule in football?",
+      "retrieval_hit": null,
+      "retrieval_rank": null,
+      "retrieval_s": 0.544,
+      "context_chars": 5715,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "The answer is not in the context.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": null,
+          "prompt_tokens": null,
+          "output_tokens": null
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "variant_rules",
+      "question": "Can the ball bounce twice before I hit it?",
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "retrieval_s": 0.454,
+      "context_chars": 8443,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "Yes, if you are a wheelchair tennis player, you are allowed two bounces of the ball and must return it before it bounces a third time. The second bounce can be either in or out of the court boundaries.\n\nFor non-wheelchair tennis, a player loses the point if they do not return the ball in play before it bounces twice consecutively, meaning only one bounce is allowed.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": null,
+          "prompt_tokens": null,
+          "output_tokens": null
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "multi_part",
+      "question": "How long can players rest when they change ends, and how long is the break between sets?",
+      "retrieval_hit": true,
+      "retrieval_rank": 7,
+      "retrieval_s": 0.289,
+      "context_chars": 8406,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "When players change ends at the end of a game, they are allowed a maximum of ninety (90) seconds. However, after the first game of each set and during a tie-break game, play shall be continuous, and players shall change ends without a rest.\n\nAt the end of each set, there shall be a set break of a maximum of one hundred and twenty (120) seconds. Before the start of a match tie-break, there shall also be a 120-second set break.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": null,
+          "prompt_tokens": null,
+          "output_tokens": null
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "scenario",
+      "question": "What happens if a stray ball rolls onto the court during a point?",
+      "retrieval_hit": true,
+      "retrieval_rank": 8,
+      "retrieval_s": 0.789,
+      "context_chars": 6170,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "If another ball rolls onto the court when the ball is in play, a let is called and the whole point must be replayed.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": null,
+          "prompt_tokens": null,
+          "output_tokens": null
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "procedure",
+      "question": "Who decides who serves first in a match?",
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "retrieval_s": 0.489,
+      "context_chars": 8882,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "The choice to be server or receiver in the first game shall be decided by toss before the warm-up starts. The player/team who wins the toss may choose to be server or receiver in the first game of the match.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": null,
+          "prompt_tokens": null,
+          "output_tokens": null
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "out_of_scope_near_miss",
+      "question": "Who won the men's singles title at Wimbledon in 2023?",
+      "retrieval_hit": null,
+      "retrieval_rank": null,
+      "retrieval_s": 0.279,
+      "context_chars": 7729,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "The answer to who won the men's singles title at Wimbledon in 2023 is not provided in the context.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": null,
+          "prompt_tokens": null,
+          "output_tokens": null
+        }
+      ]
+    }
+  ]
+}
