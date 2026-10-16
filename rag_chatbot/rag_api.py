@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 import redis.asyncio as redis
 import asyncio
 from langsmith import wrappers, traceable
+from rag_chatbot.rag_common import MODEL, SYSTEM_INSTRUCTION, log_llm_call
 
 load_dotenv()
 
@@ -113,17 +114,38 @@ async def generate_tokens(question):
         yield cache_response
     else:
         context = find_relevant_chunks(question.content, app.state.collection, 3)
+        prompt = build_prompt(context, question.content)
+        start = time.perf_counter()
+        first_token_at = None
+        last_chunk = None
         response = client.models.generate_content_stream(
-            model="gemini-2.5-flash",
-            config={"system_instruction": "You are TennisRulesBot, a helpful tennis rules assistant. Answer questions using only the context provided. If the answer is not in the context, say so."},
-            contents=build_prompt(context, question.content)
+            model=MODEL,
+            config={"system_instruction": SYSTEM_INSTRUCTION},
+            contents=prompt
         )
         chunks = []
         for chunk in response:
+            last_chunk = chunk
             if chunk.text:
+                if first_token_at is None:
+                    first_token_at = time.perf_counter()
                 yield chunk.text
                 chunks.append(chunk.text)
         chunks_string = "".join(chunks)
+
+        # Structured log of every real LLM call: prompt, response, latency, tokens.
+        # usage_metadata arrives on the final streamed chunk.
+        log_llm_call(
+            source="api_output",
+            model=MODEL,
+            question=question.content,
+            prompt=prompt,
+            response=chunks_string,
+            latency_s=time.perf_counter() - start,
+            ttft_s=(first_token_at - start) if first_token_at else None,
+            usage=getattr(last_chunk, "usage_metadata", None),
+        )
+
         task = asyncio.create_task(r.set(cache_key, chunks_string, ex=6000))
 
 
@@ -173,20 +195,38 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
 
     chat = client.aio.chats.create(
-        model="gemini-2.5-flash",
-        config={"system_instruction": "You are TennisRulesBot, a helpful tennis rules assistant. Answer questions using only the context provided. If the answer is not in the context, say so."}
+        model=MODEL,
+        config={"system_instruction": SYSTEM_INSTRUCTION}
     )
 
     try:
         while True:
             question = await websocket.receive_text()
             context = await find_relevant_chunks_async(question, app.state.collection, 3)
-            response = await chat.send_message_stream(build_prompt(context, question))
+            prompt = build_prompt(context, question)
+            start = time.perf_counter()
+            first_token_at = None
+            last_chunk = None
+            parts = []
+            response = await chat.send_message_stream(prompt)
             async for chunk in response:
+                last_chunk = chunk
                 if chunk.text:
+                    if first_token_at is None:
+                        first_token_at = time.perf_counter()
+                    parts.append(chunk.text)
                     await websocket.send_text(chunk.text)
+            log_llm_call(
+                source="api_ws",
+                model=MODEL,
+                question=question,
+                prompt=prompt,
+                response="".join(parts),
+                latency_s=time.perf_counter() - start,
+                ttft_s=(first_token_at - start) if first_token_at else None,
+                usage=getattr(last_chunk, "usage_metadata", None),
+            )
     except WebSocketDisconnect:
         print("Client disconnected")
     except Exception as e:
         print(f"WebSocket error: {e}")
-
