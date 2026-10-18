@@ -124,7 +124,7 @@ This is the expected result, not a bug - the CLI's `rag_chatbot.py` keeps a sing
 
 - **Conversation history.** The endpoint currently answers each request independently. To support follow-ups, either (a) have the client send prior turns in the request body and rebuild the prompt with that history each call (fully stateless, no server memory), or (b) key a chat session per client with a session ID and expire unused sessions after a timeout. Went with neither for now since the current schema doesn't ask for it - noted here as the natural next step.
 - **Rate limiting** - nothing currently stops one client from hammering the endpoint. (Caching in section 4 reduces repeat-question load, but doesn't rate-limit distinct questions.)
-- **Structured request/response logging** - prompt, response, latency, token count per call.
+- **Structured request/response logging** - done, see section 7.
 - **Confidence scoring on retrieval**, same as the CLI's improvement list.
 
 ### Concepts covered
@@ -284,7 +284,7 @@ rag_request
 
 - Retrieval is wording-sensitive and the PDF says "six games all" while users type "6-6". Candidates: smaller chunks with more overlap, query rewriting, hybrid keyword search.
 - Cached answers are served for the full TTL, so a weak answer is frozen for 100 minutes. Consider not caching refusals or low-confidence answers.
-- The same question gave different answers across runs. Evals should run each question several times, and `temperature` could be lowered.
+- The same question gave different answers across runs. Evals should run each question several times, and `temperature` could be lowered. The eval harness supports `--runs N`; free-tier quota has limited it to 1 run per question so far.
 - `/ws` is not traced. Each message needs its own traced function, with a shared thread ID to group a conversation.
 - `find_relevant_chunks` (sync embed + Chroma query) still runs inside an `async def` route and blocks the event loop. Given that embedding is ~90% of retrieval time, `asyncio.to_thread()` is the obvious next fix.
 
@@ -303,45 +303,56 @@ rag_request
 
 **Problem:** I was judging the bot by eyeballing answers, so I couldn't say how often it was right, or whether a wrong answer came from retrieval (the right chunk never reached the model) or generation (the model had it and still got it wrong).
 **Approach:** Built an eval harness (`eval_rag.py`) over 15 hand-written questions in `eval_set.json`. Each question has keyword checks for the answer and, where applicable, an `expected_phrase` that identifies the source chunk, so retrieval and generation are scored separately. The set mixes wording mismatches, numeric lookups, a question whose answer differs for wheelchair tennis, a multi-part question, a scenario question, and two out-of-scope questions (one clearly unrelated, one a tennis question the rules can't answer). It reuses the API's retrieval and prompt code, bypasses the Redis cache, and records API errors as errors, not failures.
-**Outcome:** At the production setting (k=3) the bot scored 11/15 end to end, and every failure traced back to retrieval. Raising k to 8 recovered all four failures with no regressions, at about 2.7x the context per query. I haven't changed the API to k=8 (see below). One run per question.
+**Outcome:** At the production setting (k=3) the bot scored 11/15 end to end on two separate runs (9 clean, 2 partial, 4 failed after reading the answers). Retrieval was identical both times (9/13, same four misses: Q1, Q4, Q8, Q13), and every failure traced back to it. The same four questions failed both times, but not identically: Q8 echoed its system instruction on the first run and gave a clean refusal on the second, and Q1 gave a partial refusal and then a grounded but misleading answer (a discretionary variant rule from the retrieved context, stated without its "at the discretion of the sanctioning body" condition). Raising k to 8 recovered all four failures and scored 15/15 on two separate runs, with both out-of-scope refusals intact.
+
+Cost of k=8 vs k=3, measured from the call log on fresh uncached runs (one run each, on different days, so the latency difference is within noise). Mean tokens per query at k=3 / k=8: prompt 735 / 1,985 (2.7x), visible output 39 / 67, thinking 299 / 487, total 1,073 / 2,539 (2.4x). Median latency 2.07s / 2.36s. Thinking tokens outnumber visible output tokens by roughly 7 to 8x at both settings, so the visible output count alone badly understates generation cost. I haven't changed the API to k=8 (see below).
+
+Scoring was tightened after the second k=3 run (see Limitations). I re-scored all four saved reports with `--rescore`: k=3 stayed at 11/15 on the first run and corrected from 12/15 to 11/15 on the second, and k=8 stayed 15/15 on both.
 
 | | k=3 (production) | k=8 |
 |---|---|---|
 | Retrieval hit rate | 9/13 | 13/13 |
-| End-to-end, keyword scoring | 11/15 | 15/15 |
-| End-to-end, after reading answers | 9 clean, 2 partial, 4 failed | the 4 failures fixed, same 2 partials |
+| End-to-end, keyword scoring | 11/15, 11/15 on rerun | 15/15, 15/15 on rerun |
+| End-to-end, after reading answers (first k=3 run) | 9 clean, 2 partial, 4 failed | the 4 failures fixed, same 2 partials |
 | Out-of-scope (Q10, Q15) | 2/2 refused | 2/2 refused |
+| Median latency (non-streamed) | 2.07s | 2.36s |
+| Mean prompt tokens | 735 | 1,985 |
+| Mean output tokens (visible) | 39 | 67 |
+| Mean thinking tokens | 299 | 487 |
+| Mean total tokens | 1,073 | 2,539 |
+| Mean context chars | 2,592 | 7,322 |
 
 At k=3, when retrieval found the right chunk the answer was right (9/9 passed the check, 7 fully clean). When it didn't, the answer was wrong (0/4). Retrieval is the bottleneck, not generation.
 
 ### Why retrieval missed
 
-At k=3 the answer chunk ranked 5th to 8th for every miss (Q4 5th, Q1 and Q8 6th, Q12 7th, Q13 8th). Three causes:
+At k=3 the answer chunk ranked 5th to 8th for every miss (Q4 5th, Q1 and Q8 6th, Q13 8th). Two causes:
 - **Vocabulary the PDF doesn't use.** Users say "tiebreak" and "double fault"; the rules say "tie-break game" and "serves two consecutive faults".
-- **Compound questions.** Q12 asks two things and its chunk ranked 7th, while a simple question hitting the same chunk (Q7) ranked it 3rd.
 - **Answers inside example cases.** Q13's answer sits in a Case under Rule 23, not in the rule text.
+
+Q12 (a two-part question) first looked like a third cause, with its chunk ranked 7th, but that came from an `expected_phrase` that was too narrow: the 90 seconds is stated in more than one chunk. With the phrase widened it hits at #1 at k=3, so compound questions were a scoring artefact, not a retrieval cause.
 
 ### How the four k=3 failures failed
 
-| Q | What the bot did | Failure type |
-|---|---|---|
-| 1 | Said the context gives no general definition of a tie-break | Honest partial refusal |
-| 13 | "The answer is not in the context." | Clean refusal |
-| 4 | Said a serve touching the net is good and playable | Confident wrong answer: used the optional No-Let rule from Appendix VI instead of Rule 22 (service let), presenting it as the answer to a question that never mentioned No-Let |
-| 8 | Echoed its own system instruction | Degenerate output |
+| Q | Run 1 | Run 2 | Failure type |
+|---|---|---|---|
+| 1 | Said the context gives no general definition of a tie-break | Described match and short-set tie-breaks only and said a tie-break may be played at "three games all", which is not the standard rule. The phrase was in the retrieved context (checked in the call log), where the rule applies "at the discretion of the sanctioning body"; the answer dropped that qualifier and presented it as a general alternative | Partial refusal, then a grounded answer that dropped a limiting condition |
+| 13 | "The answer is not in the context." | Same | Clean refusal |
+| 4 | Said a serve touching the net is good and playable | Same: answered from the No-Let rule | Confident wrong answer: used the optional No-Let rule from Appendix VI instead of Rule 22 (service let), presenting it as the answer to a question that never mentioned No-Let |
+| 8 | Echoed its own system instruction | "The context does not provide information on what happens on a double fault." | Degenerate output once, then a clean refusal |
 
-Refusals are the safe failure. The Q4 type, a confident answer from the wrong rule, is the one a user would believe.
+Refusals are the safe failure. The Q4 type, a confident answer from the wrong rule, is the one a user would believe. Q4 reproduced on both runs, so the confident wrong answer is a stable failure at k=3, not a one-off.
 
 ### Raising k: k=3 vs k=8
 
 Retrieval-only runs on the first nine questions gave 6/9 at k=3, 7/9 at k=5 and 9/9 at k=6, which made k=6 look like a full fix. Six questions written to be different in kind showed it wasn't: answer chunks ranked as deep as 8th, and k=8 (about 10% of the 86 chunks) was the smallest k with 13/13 retrieval. Generation at k=8 (15 fresh calls, 0 errors):
 - **Q4** now picked the standard Rule 22 (service let) even with the Appendix VI No-Let chunk in context.
-- **Q8 and Q13** gave clean, correct answers. Q8's echo didn't reappear, but that was one run, so it isn't proven fixed.
+- **Q8 and Q13** gave clean, correct answers. Q8's echo appeared once at k=3 and not on the rerun, so it is intermittent rather than fixed or reproduced.
 - **Q1** passes on content but the answer is muddier than the others.
 - **Q6 and Q14** were unchanged. A bigger k fixes retrieval failures, not incomplete answers or lenient checks.
 - **Both refusals held** with 8 chunks in context.
 
-Why the API is unchanged: I chose k=8 by looking at this same set, so 15/15 is partly built in; it sends about 2.7x the context per query at a cost and latency I haven't measured; and one run on 15 questions shows a direction, not a precise gain. I read the answers for the changed and borderline questions (Q1, 4, 6, 8, 10, 13, 14, 15); the rest passed their keyword checks.
+Why the API is unchanged: I chose k=8 by looking at this same set, so 15/15 is partly built in, even though a fresh run reproduced it; k=8 uses about 2.4x the total tokens per query (1,073 to 2,539, including thinking) for roughly 0.3s more median latency, which is measured but from single runs on different days; and two runs on 15 questions show a direction, not a precise gain. I read the answers for the changed and borderline questions (Q1, 4, 6, 8, 10, 13, 14, 15); the rest passed their keyword checks.
 
 ### Technical decisions
 
@@ -349,19 +360,22 @@ Why the API is unchanged: I chose k=8 by looking at this same set, so 15/15 is p
 - **Errors are not failures.** Quota errors are excluded from accuracy, the run stops after 3 consecutive API errors, and incomplete questions are named in the report.
 - **Eval-only answer cache** (`eval_results/answer_cache.json`, git-ignored), keyed on model, system instruction, prompt and run index, so reruns only pay for missing answers. This kept the eval within the free tier's 20 generation calls per day.
 - **Expected phrases checked against the stored chunks** before trusting any retrieval number. All nine initial phrases existed, so the misses were real.
+- **Re-scoring saved reports.** `--rescore <report.json>` re-applies the current `eval_set.json` checks to a saved report with no API calls. After tightening a check, this showed which past scores changed without spending quota or editing the saved evidence.
 
 ### Limitations
 
 - 15 questions I wrote, partly adjusted after seeing results, and k=8 was chosen using the same set. This is a regression set, not a statistical estimate of real-world accuracy.
-- One run per question, and the model is non-deterministic.
-- Keyword scoring is crude: Q6 and Q14 passed without fully answering, and I only found that by reading the raw answers.
-- `expected_phrase` accepts one chunk, but the PDF repeats some facts, so Q12 was scored a retrieval miss despite being answered from another chunk. A refusal check on "not in the context" would also accept an echo of the system prompt.
+- One run per question per setting, and the model is non-deterministic: failure text varied between the two k=3 runs (Q1, Q8) even though pass/fail didn't.
+- Keyword scoring is crude. Q6 and Q14 passed without fully answering, and Q1's first check passed a wrong k=3 answer ("two" matched "two sets all", "7" matched "7-point"). I only caught both by reading the raw answers, then tightened Q1's check and re-scored all saved runs.
+- Token figures were computed from the call log, splitting k=3 and k=8 records by prompt length, because the saved reports' summaries don't include thinking tokens.
+- A refusal check on "not in the context" would also accept an echo of the system prompt (the harness now rejects the known echo markers, but not every degenerate output).
 
 ### What I'd improve
 
-- Write fresh held-out questions and run k=3 and k=8 on them before changing the API, and measure token cost and latency at k=8.
+- Write fresh held-out questions and run k=3 and k=8 on them before changing the API, and have the eval summary report thinking and total tokens (currently read by hand from the log). Test a lower thinking budget for this task: thinking is ~7x the visible output and dominates generation tokens.
 - Judge retrieval by whether the context supports the answer, and use an LLM judge for answers. Reject degenerate outputs before scoring them as refusals.
 - Fix retrieval itself (query rewriting, smaller chunks or hybrid keyword search) so a smaller k works.
+- Label or restrict optional and discretionary variant rules (No-Let, short sets, "at the discretion of the sanctioning body" alternatives) so the model can't present them as the default rule or drop their conditions. This is a retrieval-side fix that works at any k; Q4 (No-Let) and Q1 ("three games all") both show why it matters. A prompt instruction to preserve conditions such as "at the discretion of…" is a cheaper first step.
 - Run each question 3 times to measure variance, starting with Q4 and Q8.
 
 ### Concepts covered
@@ -369,7 +383,27 @@ Why the API is unchanged: I chose k=8 by looking at this same set, so 15/15 is p
 - Separating retrieval metrics from generation metrics (context recall vs faithfulness)
 - Designing an eval set for coverage and avoiding tuning to the test set
 - Treating API errors separately from model failures
-- Validating the evaluator itself: checking expected phrases and reading raw answers
+- Validating the evaluator itself: checking expected phrases, reading raw answers (which caught a false pass on Q1), and re-scoring saved runs after tightening a check
+
+---
+
+## 7. Structured logging - `rag_common.log_llm_call`
+
+**Problem:** LangSmith's free tier caps traces and expires them after 14 days, so there was no durable record of each call's prompt, response, latency or token cost.
+**Approach:** A single `log_llm_call()` in `rag_common.py` appends one JSON line per real LLM call to `logs/llm_calls.jsonl`: timestamp, source (`api_output`, `api_ws` or `eval`), model, question, prompt, response, latency, time to first token, and prompt/output/total/thinking tokens. For streamed calls, usage metadata is taken from the final chunk. It never raises, so logging cannot fail a request.
+**Outcome:** Every `/output` miss, every `/ws` message and every eval generation is logged. Cache hits make no LLM call, so they are not. The log gave a measured cost comparison of k=3 vs k=8 (median 2.07s vs 2.36s, mean prompt tokens 735 vs 1,985). `logs/` is git-ignored apart from a trimmed `sample_llm_calls.jsonl`.
+
+### Technical decisions
+
+**One shared helper, not per-file logging** - the API and the eval use the same function, so the numbers they report are comparable.
+**Logging never raises** - the call is wrapped in try/except and prints a warning on failure.
+**JSONL, not a database** - append-only, greppable, and easy to analyse with jq or pandas.
+
+### What I'd improve
+
+- Report `thinking_tokens` and total tokens in the eval summary; they are logged, but the summary still prints only prompt and output, and thinking was ~7x the visible output.
+- Log cache hits too (with a `cache_hit` flag) so hit rate can be measured.
+- Log rotation and a size cap; the file grows forever.
 
 ---
 
@@ -408,6 +442,9 @@ python -m rag_chatbot.eval_rag --retrieval-only          # no generation calls
 python -m rag_chatbot.eval_rag --retrieval-only --k 8
 python -m rag_chatbot.eval_rag --runs 1 --label baseline_k3
 python -m rag_chatbot.eval_rag --runs 1 --k 8 --label k8
+python -m rag_chatbot.eval_rag --runs 1 --k 3 --no-cache --label k3_fresh
+python -m rag_chatbot.eval_rag --runs 1 --k 8 --no-cache --label k8_fresh
+python -m rag_chatbot.eval_rag --rescore rag_chatbot/eval_results/<report>.json   # no API calls
 python -m rag_chatbot.eval_rag --compare <before.json> <after.json>
 ```
 
@@ -418,8 +455,8 @@ python -m rag_chatbot.eval_rag --compare <before.json> <after.json>
 - `documents/2026-rules-of-tennis-english.pdf` - the ITF Rules of Tennis
 - `chroma_db/` - generated on first run, not committed to git
 - `static/websocket_client.html` - minimal HTML/JS test client for the `/ws` endpoint
-- `eval_rag.py` - eval harness: scores retrieval and generation separately, with an answer cache and call budget
+- `eval_rag.py` - eval harness: scores retrieval and generation separately, with an answer cache, call budget and `--rescore`
 - `eval_set.json` - the 15 eval questions with expected phrases and keyword checks
-- `eval_results/` - saved eval reports (the answer cache in here is git-ignored)
-- `rag_common.py` - generic code to be shared e.g. model, system instruction, LLM log call
-- `logs/` - structured logging of every call (token count, response and latency)
+- `eval_results/` - saved eval reports (the answer cache in here is git-ignored); re-score any of them with `--rescore`
+- `rag_common.py` - code shared by the API and the eval: model, system instruction, phrase-matching helper, LLM call logging
+- `logs/` - structured logging of every call (token count, response and latency); only `sample_llm_calls.jsonl` is committed
