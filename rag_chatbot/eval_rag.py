@@ -269,7 +269,7 @@ def run_retrieval_only(k):
             scorable += 1
             hits += hit
         label = "n/a" if hit is None else (f"hit #{rank}" if hit else "MISS")
-        print(f"Q{item['id']:<3} {item['type']:<17} {label:<8} {item['question'][:50]}")
+        print(f"Q{item['id']:<3} {item['type']:<24} {label:<8} {item['question'][:50]}")
     print(f"\nRetrieval hit rate at k={k}: {hits}/{scorable}")
 
 
@@ -457,7 +457,7 @@ def print_report(report):
     print(f"Eval: {report['label']}   k={report['config']['k']}   "
           f"runs={report['config']['runs_per_question']}   {report['timestamp']}")
     print("=" * 78)
-    print(f"{'Q':<3} {'type':<17} {'retrieval':<10} {'answer':<10} question")
+    print(f"{'Q':<3} {'type':<24} {'retrieval':<10} {'answer':<10} question")
     for r in report["results"]:
         if r["retrieval_hit"] is None:
             retrieval = "n/a"
@@ -468,7 +468,7 @@ def print_report(report):
         answer = f"{r['runs_passed']}/{r['runs_scored']}"
         if r["runs_errored"]:
             answer += f" +{r['runs_errored']}err"
-        print(f"{r['id']:<3} {r['type']:<17} {retrieval:<10} {answer:<10} {r['question'][:38]}")
+        print(f"{r['id']:<3} {r['type']:<24} {retrieval:<10} {answer:<10} {r['question'][:38]}")
 
     s = report["summary"]
     print("-" * 78)
@@ -533,6 +533,27 @@ def compare_reports(path_a, path_b):
             print(f"Q{rb['id']}: retrieval {ra['retrieval_hit']} -> {rb['retrieval_hit']}, "
                   f"answer {ra['runs_passed']}/{ra['runs_scored']} -> {rb['runs_passed']}/{rb['runs_scored']}  | {rb['question'][:45]}")
 
+def rescore_report(path):
+    """Re-score a saved report with the current eval_set.json. Makes no API calls."""
+    with open(path, encoding="utf-8") as f:
+        report = json.load(f)
+    items = {i["id"]: i for i in load_eval_set()}
+    passed_q = total_q = 0
+    for r in report["results"]:
+        scored = [rr for rr in r["run_results"] if not rr["errored"]]
+        if len(scored) < r["runs"]:
+            continue
+        item = items[r["id"]]
+        results = [score_answer(item, rr["answer"]) for rr in scored]
+        old = [rr["passed"] for rr in scored]
+        new = [ok for ok, _ in results]
+        total_q += 1
+        passed_q += all(new)
+        if old != new:
+            print(f"Q{r['id']}: {old} -> {new}  {results[0][1]}")
+    print(f"{report['label']}: {passed_q}/{total_q} under current scoring "
+          f"(saved report said {report['summary']['answer_accuracy_strict']})")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate TennisRulesBot")
@@ -552,6 +573,7 @@ def main():
     parser.add_argument("--trace", action="store_true",
                         help="leave LangSmith tracing on (off by default for evals)")
     parser.add_argument("--compare", nargs=2, metavar=("BEFORE", "AFTER"), help="compare two saved result files")
+    parser.add_argument("--rescore", metavar="REPORT", help="re-score a saved result file; no API calls")
     args = parser.parse_args()
 
     if args.compare:
@@ -565,6 +587,10 @@ def main():
     if args.retrieval_only:
         run_retrieval_only(args.k)
         return
+
+    if args.rescore:
+        rescore_report(args.rescore)
+    return
 
     report = run_eval(args.k, args.runs, args.label, args.delay, args.max_calls, not args.no_cache)
     print_report(report)

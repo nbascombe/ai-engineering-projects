@@ -5,8 +5,8 @@
     "question": "What is a tiebreak?",
     "expected_answer": "A tie-break game is won by the first player/team to win seven points, provided they lead by a margin of two points; it continues until that margin is reached.",
     "must_contain": [
-      ["seven", "7"],
-      ["two", "2"]
+      ["seven points", "7 points", "first to seven"],
+      ["margin of two", "two points", "two-point", "2 points"]
     ],
     "expected_phrase": "seven points wins the",
     "should_refuse": false,
@@ -103,7 +103,7 @@
     "expected_phrase": "serves two consecutive faults",
     "should_refuse": false,
     "source": "Rule 24a",
-    "note": "Your CLI README shows the bot said the context did not contain 'double fault'. The PDF never uses that term, so this tests the same wording gap as Q1. The harness now also fails answers that echo the system instruction (seen on this question at k=3)."
+    "note": "The CLI README shows the bot said the context did not contain 'double fault'. The PDF never uses that term, so this tests the same wording gap as Q1. The harness also fails answers that echo the system instruction (seen on this question at k=3)."
   },
   {
     "id": 9,
@@ -151,14 +151,14 @@
       ["90", "ninety"],
       ["120", "one hundred and twenty", "hundred and twenty"]
     ],
-    "expected_phrase": [
-    "ninety (90) seconds",
-    "one hundred and twenty (120) seconds"
+        "expected_phrase": [
+      "ninety (90) seconds",
+      "one hundred and twenty (120) seconds"
     ],
     "phrase_match": "all",
     "should_refuse": false,
     "source": "Rule 29a",
-"note": "Needs two facts that may sit in different chunks, so retrieval requires BOTH phrases (phrase_match 'all'). The first phrase was widened from 'a maximum of ninety (90) seconds' after the k=3 answer proved to be grounded in a different retrieved chunk that states the 90 seconds in other words."
+    "note": "Needs two facts that may sit in different chunks, so retrieval requires BOTH phrases (phrase_match 'all'). The first phrase was widened from 'a maximum of ninety (90) seconds' after the k=3 answer proved to be grounded in a different retrieved chunk that states the 90 seconds in other words."
   },
   {
     "id": 13,

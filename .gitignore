@@ -8,4 +8,5 @@ SystemDesign.md
 terminal_prompts.md
 basic_langchain_chatbot.py
 rag_chatbot/eval_results/answer_cache.json
-rag_chatbot/logs/
+rag_chatbot/logs/*
+!rag_chatbot/logs/sample_llm_calls.jsonl
