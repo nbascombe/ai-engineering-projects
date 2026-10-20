@@ -36,18 +36,22 @@ def embed_and_store(chunks, chromadb_client):
     """Embed each document chunk and store in ChromaDB with metadata"""
     collection = chromadb_client.create_collection("tennis_rules")
 
-    for i, chunk in enumerate(chunks):
-        print(f"Embedding chunk {i + 1}/{len(chunks)}...")
-        embedding = embed_text(chunk.page_content)
-        collection.add(
-            ids=[f"chunk_{i}"],
-            embeddings=[embedding],
-            documents=[chunk.page_content],
-            metadatas=[{"page": chunk.metadata.get("page")}]
-        )
-        time.sleep(0.7)
-    print(f'Stored {len(chunks)} chunks')
-    return collection
+    try:
+        for i, chunk in enumerate(chunks):
+            print(f"Embedding chunk {i + 1}/{len(chunks)}...")
+            embedding = embed_text(chunk.page_content)
+            collection.add(
+                ids=[f"chunk_{i}"],
+                embeddings=[embedding],
+                documents=[chunk.page_content],
+                metadatas=[{"page": chunk.metadata.get("page")}]
+            )
+            time.sleep(0.7)
+        print(f'Stored {len(chunks)} chunks')
+        return collection
+    except BaseException:
+        chromadb_client.delete_collection("tennis_rules")
+        raise
 
 def load_or_build_collection(chromadb_client, chunks):
     """Load existing ChromaDB collection or build a new one if it doesn't exist."""
