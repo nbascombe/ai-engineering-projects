@@ -12,9 +12,9 @@ while True:
     user_input = input("You: ")
 
     if not user_input.strip():
-            print("Please type a question")
-            continue
-    
+        print("Please type a question")
+        continue
+
     if user_input.lower() == "quit":
         print("Goodbye!")
         break
@@ -28,10 +28,10 @@ while True:
         print(f'Error calling the API {e}')
         print("Retrying...")
         # retry logic
-        try:  
+        try:
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
-                contents={user_input}
+                contents=user_input
             )
         except Exception as e:
             print(f'Retry failed: {e}')
@@ -39,5 +39,3 @@ while True:
             continue
 
     print(response.text)
-
-

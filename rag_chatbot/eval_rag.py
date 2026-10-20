@@ -590,7 +590,7 @@ def main():
 
     if args.rescore:
         rescore_report(args.rescore)
-    return
+        return
 
     report = run_eval(args.k, args.runs, args.label, args.delay, args.max_calls, not args.no_cache)
     print_report(report)
