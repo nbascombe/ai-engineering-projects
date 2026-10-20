@@ -50,6 +50,8 @@ The baseball example demonstrates the system correctly refusing to answer outsid
 
 **Pages skipped: first 6** - the cover, app download page, and contents pages add no retrieval value. Skipping them reduces total chunks from 184 to 86.
 
+**Failed builds clean up after themselves** - if embedding fails part way (quota, network, Ctrl-C), the partially built collection is deleted. Without this, the next run's `get_collection()` succeeds and silently serves a half-built index.
+
 **Stateful chat session** - `client.chats.create()` maintains one conversation for the lifetime of the terminal session, so the model has access to prior turns when answering follow-up questions.
 
 ### What I'd improve
@@ -72,7 +74,7 @@ The baseball example demonstrates the system correctly refusing to answer outsid
 
 ## 2. API - `rag_api.py`
 
-*(Superseded: `/output` is now `async def` with an async Redis client. See section 4's async-writes update. The reasoning below explains the original design.)*
+*(Superseded: `/output` is now fully async - async Redis client, async embedding, `asyncio.to_thread` for the Chroma query and `client.aio` streaming. See section 4's async-writes and fully-async updates. The reasoning below explains the original sync design.)*
 **Problem:** A CLI tool can only be used by one person, in one terminal, at a time. Wrapping the same RAG pipeline as an HTTP service makes it usable by any client - a frontend, another service, or multiple simultaneous users - without each of them needing Python installed locally.
 **Approach:** FastAPI service built on the same retrieval functions as the CLI (`find_relevant_chunks`, `build_prompt`, `load_or_build_collection`). The ChromaDB collection is built once at startup via FastAPI's `lifespan` context manager and shared across all requests through `app.state`, rather than being rebuilt per request. Each request is answered with a single stateless `generate_content` call rather than a persistent chat session, since REST endpoints don't inherently carry state between calls and the endpoint currently has no mechanism for a client to signal "this is a follow-up." Requests are validated with a Pydantic model that strips whitespace and rejects empty input.
 **Outcome:** A running HTTP service, testable via FastAPI's built-in Swagger UI at `/docs`, that returns grounded, accurate answers on in-scope questions and correctly refuses out-of-scope ones - matching the CLI's grounding behaviour. Confirmed via manual testing that the endpoint does **not** retain conversation history across requests (see below).
@@ -162,7 +164,7 @@ Assistant: A ball landing in the correct court is considered a good return.
 ### What I'd improve
 
 - Session cleanup/expiry - currently every open connection holds a `chat` object in memory indefinitely; no timeout or limit on concurrent sessions
-- `collection.query()` (ChromaDB) is still a sync call inside the async handler - smaller blocking cost than the network-bound embed/generate calls, but not addressed here. Could wrap with `asyncio.to_thread()`
+- ~~`collection.query()` (ChromaDB) is still a sync call inside the async handler~~ - done: `find_relevant_chunks_async` now runs the query via `asyncio.to_thread()` (see section 4's fully-async update)
 - Compare against SSE for this exact use case - implement `/output` as proper `text/event-stream` SSE and compare against this WebSocket version directly
 
 ### System design: WebSocket vs SSE for this use case
@@ -242,10 +244,16 @@ Measured with `time curl`, N=10 per case, wall-clock `real` time:
 
 ### What I'd improve (async writes)
 
-- `find_relevant_chunks` inside `generate_tokens` is still a fully synchronous call (embedding + Chroma query) now sitting inside an `async def` route - a candidate for `asyncio.to_thread()` so it doesn't block the event loop the way the WebSocket README section warns against.
-- Task lifetime isn't explicitly managed - `asyncio.create_task()` results aren't held in a persistent reference, which is a known asyncio footgun (tasks can be garbage-collected before completion). Not observed as a problem in manual testing, but not stress-tested under concurrent rapid-fire requests either.
+- ~~`find_relevant_chunks` inside `generate_tokens` is still synchronous~~ - done, see the fully-async update below.
+- ~~Task lifetime isn't explicitly managed~~ - done: tasks are held in a `background_tasks` set until complete, and `lifespan` awaits any in-flight writes on shutdown. Still not stress-tested under concurrent rapid-fire requests.
 - Benchmark used mean, not median - a single slow outlier in the miss set skews the average upward; median would be more robust for a small sample size.
 
+
+### Update: fully async request path
+
+**Problem:** `/output` was `async def` but its retrieval (sync embed + Chroma query) and generation (sync streaming iterator) still blocked the event loop on every cache miss, stalling all other in-flight requests.
+**Approach:** Retrieval now goes through `find_relevant_chunks_async` (async embed, Chroma query via `asyncio.to_thread`), generation uses `await client.aio.models.generate_content_stream(...)` with `async for`, and cache-write tasks are kept in a `background_tasks` set. Empty responses are not cached. The sync `find_relevant_chunks` remains for the CLI and the eval harness.
+**Outcome:** Two simultaneous cache misses on `/output` finished in 1.87s and 2.74s (cache keys cleared first), so one slow request no longer delays another. Single manual run, no sync baseline. Still to check: that LangSmith's `wrap_gemini` still traces the `aio` streaming call (the `retrieve_chunks` run is preserved by decorating the async function too).
 
 ### Concepts covered
 
@@ -286,7 +294,7 @@ rag_request
 - Cached answers are served for the full TTL, so a weak answer is frozen for 100 minutes. Consider not caching refusals or low-confidence answers.
 - The same question gave different answers across runs. Evals should run each question several times, and `temperature` could be lowered. The eval harness supports `--runs N`; free-tier quota has limited it to 1 run per question so far.
 - `/ws` is not traced. Each message needs its own traced function, with a shared thread ID to group a conversation.
-- `find_relevant_chunks` (sync embed + Chroma query) still runs inside an `async def` route and blocks the event loop. Given that embedding is ~90% of retrieval time, `asyncio.to_thread()` is the obvious next fix.
+- ~~`find_relevant_chunks` (sync embed + Chroma query) still runs inside an `async def` route and blocks the event loop~~ - done in section 4's fully-async update (async embed, `asyncio.to_thread` for the query).
 
 ### Concepts covered
 
@@ -368,6 +376,7 @@ Why the API is unchanged: I chose k=8 by looking at this same set, so 15/15 is p
 - One run per question per setting, and the model is non-deterministic: failure text varied between the two k=3 runs (Q1, Q8) even though pass/fail didn't.
 - Keyword scoring is crude. Q6 and Q14 passed without fully answering, and Q1's first check passed a wrong k=3 answer ("two" matched "two sets all", "7" matched "7-point"). I only caught both by reading the raw answers, then tightened Q1's check and re-scored all saved runs.
 - Token figures were computed from the call log, splitting k=3 and k=8 records by prompt length, because the saved reports' summaries don't include thinking tokens.
+- The eval harness uses the sync retrieval and generation path, so these numbers predate the async changes to `/output`. They should be unaffected (same chunks, model and prompt), but the API path itself hasn't been re-evaluated.
 - A refusal check on "not in the context" would also accept an echo of the system prompt (the harness now rejects the known echo markers, but not every degenerate output).
 
 ### What I'd improve
@@ -410,6 +419,7 @@ Why the API is unchanged: I chose k=8 by looking at this same set, so 15/15 is p
 ## Prerequisites
 
 - A Google Gemini API key - get one at aistudio.google.com
+- A Redis server running on localhost:6379 (the API's cache): `brew install redis && brew services start redis`, or `docker run -p 6379:6379 redis`
 - Create a `.env` file in the repo root:
 ```
 GOOGLE_API_KEY=your-key-here
