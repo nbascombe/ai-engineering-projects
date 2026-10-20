@@ -4,10 +4,21 @@ from dotenv import load_dotenv
 import os
 from google.genai import types
 from rag_foundation.documents import DOCUMENTS
+from rag_chatbot.rag_common import MODEL
 
 load_dotenv()
 
 client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+
+SYSTEM_INSTRUCTION = (
+    "You are a tennis assistant. "
+    "Only answer questions related to tennis. "
+    "Use tools when they provide information you need. "
+    "After each tool result, decide whether another tool call is necessary "
+    "before giving the final answer."
+)
+
+MAX_TOOL_ROUNDS = 5
 
 def match_delay_risk_from_weather(location):
     try:
@@ -173,32 +184,29 @@ document_lookup_function = types.FunctionDeclaration(
 )
 
 tool = types.Tool(function_declarations=[weather_function, set_scoring_function, document_lookup_function])
-tool_hander = {
+tool_handlers = {
     "match_delay_risk_from_weather": match_delay_risk_from_weather, 
     "resolve_set_score": resolve_set_score, 
     "get_document_lookup": get_document_lookup
     }
 
+def generate(contents):
+    """One model call with the shared model, tools and system instruction."""
+    return client.models.generate_content(
+        model=MODEL,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            tools=[tool],
+            system_instruction=SYSTEM_INSTRUCTION
+        )
+    )
+
 if __name__ == "__main__":
     contents = ["Is the match in London going to be delayed, and who's ahead in the set at 5-4? Is Roger Federer the greatest tennis player of all time?"]
 
-    response = client.models.generate_content(
-                model="gemini-3.8-flash",
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    tools=[tool], 
-                    system_instruction=("You are a tennis assistant. "
-                    "Only answer questions related to tennis. "
-                    "Use tools when they provide information you need. "
-                    "After receiving a tool result, decide whether another "
-                    "tool call is necessary before answering."
-                    )   
-                )
-            )
+    response = generate(contents)
 
-    function_call = response.function_calls[0] if response.function_calls else None
-
-    for i in range(5):
+    for i in range(MAX_TOOL_ROUNDS):
         if not response.function_calls:
             break
 
@@ -208,7 +216,7 @@ if __name__ == "__main__":
 
         for function_call in response.function_calls:
             print(f"[tool called: {function_call.name}({function_call.args})]")
-            handler = tool_hander.get(function_call.name)
+            handler = tool_handlers.get(function_call.name)
 
             if handler:
                 result = handler(**function_call.args)
@@ -222,17 +230,7 @@ if __name__ == "__main__":
 
         contents.append(types.Content(role="user", parts=tool_response_parts))
 
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=contents,
-            config=types.GenerateContentConfig(
-                tools=[tool], 
-                system_instruction="You are a tennis assistant. "
-                "Only answer questions related to tennis. "
-                "Use tools when necessary. "
-                "After each tool result, determine whether you "
-                "need another tool before giving the final answer.")
-        )
+        response = generate(contents)
     else:
         print("[stopped: hit max iterations before a final answer]")
 
