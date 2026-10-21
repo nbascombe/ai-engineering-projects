@@ -109,6 +109,8 @@ weather_function = types.FunctionDeclaration(
 )
 
 def resolve_set_score(player_a_games, player_b_games):
+    if player_a_games < 0 or player_b_games < 0:
+        return 'Invalid'
     high = max(player_a_games, player_b_games)
     low = min(player_a_games, player_b_games)
     margin = high - low
@@ -219,7 +221,16 @@ if __name__ == "__main__":
             handler = tool_handlers.get(function_call.name)
 
             if handler:
-                result = handler(**function_call.args)
+                # A bad or missing argument from the model must come back as a structured
+                # error it can read and recover from, not crash the loop.
+                try:
+                    result = handler(**(function_call.args or {}))
+                except Exception as e:
+                    result = {
+                        "success": False,
+                        "error": "tool_execution_failed",
+                        "message": f"{function_call.name} failed: {type(e).__name__}: {e}"
+                    }
             else:
                 result = {"success": False, "error": "unknown_tool", "message": f"No handler for {function_call.name}"}
 
@@ -231,7 +242,10 @@ if __name__ == "__main__":
         contents.append(types.Content(role="user", parts=tool_response_parts))
 
         response = generate(contents)
-    else:
+
+    # Checked after the loop, not via for/else: a final text answer arriving on the
+    # last round is a success, and for/else would wrongly report it as a stop.
+    if response.function_calls:
         print("[stopped: hit max iterations before a final answer]")
 
     print(response.text or "[no final text returned]")

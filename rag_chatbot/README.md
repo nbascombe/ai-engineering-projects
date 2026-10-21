@@ -40,6 +40,8 @@ play baseball.
 
 The baseball example demonstrates the system correctly refusing to answer outside its knowledge base.
 
+*Note: this is an early transcript. The rule numbers in the double-fault reply are the model's own and don't match the eval set, which sources this rule to Rule 24a (\"serves two consecutive faults\"). The reply is kept because it shows the wording gap (\"double fault\" vs the PDF's vocabulary) that became eval question Q8 in section 6.*
+
 ### Technical decisions
 
 **Chunk size: 1200 characters** - balances retrieval precision against the Gemini free tier embedding limit of 100 requests per minute. Smaller chunks improve precision but increase the total number of API calls required to embed the document.
@@ -81,31 +83,30 @@ The baseball example demonstrates the system correctly refusing to answer outsid
 
 ### Example interactions
 
-```json
-POST /output
-{ "content": "What happens if you hit the net on your first serve?" }
+`/output` streams its answer as `text/plain` chunks. The bodies below are the concatenated stream.
 
-{ "answer": "If the ball served touches the net, strap, or band and is otherwise
-good, the service is a let. In this case, that particular service shall not
-count, and the server shall serve again." }
+```
+curl -X POST http://localhost:8000/output -d '{"content": "What happens if you hit the net on your first serve?"}'
+
+If the ball served touches the net, strap, or band and is otherwise good, the
+service is a let. In this case, that particular service shall not count, and
+the server shall serve again.
 ```
 
-```json
-POST /output
-{ "content": "What is the offside rule in football?" }
+```
+curl -X POST http://localhost:8000/output -d '{"content": "What is the offside rule in football?"}'
 
-{ "answer": "I am sorry, but the provided context does not contain any
-information about the offside rule in football." }
+I am sorry, but the provided context does not contain any information about
+the offside rule in football.
 ```
 
 **No cross-request history** - confirmed by testing a follow-up that only makes sense with prior context:
 
-```json
-POST /output
-{ "content": "Is that the same in doubles?" }
+```
+curl -X POST http://localhost:8000/output -d '{"content": "Is that the same in doubles?"}'
 
-{ "answer": "The context does not provide information to answer what \"that\"
-refers to in relation to doubles." }
+The context does not provide information to answer what "that" refers to in
+relation to doubles.
 ```
 
 This is the expected result, not a bug - the CLI's `rag_chatbot.py` keeps a single persistent chat session and would understand this follow-up; the API currently treats every request independently. See "What I'd improve" below.
@@ -212,10 +213,16 @@ real 0m0.034s
 
 **Redis connection with `decode_responses=True`** - `r.get()` returns `bytes` by default, while the cache-miss branch yields `str` (`chunk.text`) - a real type inconsistency between the two code paths, found while testing. Rather than decoding at the single call site (`cache_response.decode("utf-8")`), fixed it at the connection level with `redis.Redis(decode_responses=True)`, so every `r.get()` on this connection returns `str` automatically. A connection-level fix so any future Redis reads added to this file don't need to remember to decode individually - though worth noting it assumes every value on this connection is text, which holds here but wouldn't if binary data were ever cached on the same connection.
 
+### Update: namespaced, versioned cache keys
+
+**Problem:** Keys were the bare lowercased question, so a change to the model, system instruction, retrieval k or chunking would keep serving answers generated under the old setup until the TTL expired.
+**Approach:** Keys are now `rag:<CACHE_VERSION>:<fingerprint>:<question>`. The fingerprint is a short hash of `MODEL` and `SYSTEM_INSTRUCTION`, so editing either invalidates the cache automatically. `CACHE_VERSION` (a constant in `rag_api.py`) is bumped by hand for changes the fingerprint can't see: retrieval k, chunk size, the prompt template or the source PDF.
+**Outcome:** Entries written under the old scheme are never read again and expire on their own within the 6000s TTL, so the only visible effect of the change is one extra miss per question. Nothing else reads these keys (the eval bypasses the cache). The `rag:` prefix also lets `redis-cli --scan --pattern 'rag:*'` find the app's keys.
+
 ### What I'd improve
 
 - **Semantic caching** - exact-match-after-normalisation still misses paraphrases (`"what's a tiebreak?"` vs `"what is a tiebreak?"`). Would need embedding-based similarity lookup against cached questions instead of a literal key match.
-- **Cache invalidation strategy** - currently relies purely on TTL expiry. If the source PDF changes, there's no mechanism to invalidate cached answers immediately.
+- **Cache invalidation strategy** - keys are now versioned (see the update above), so a model or prompt change invalidates automatically, but the source PDF and retrieval k still rely on remembering to bump `CACHE_VERSION`. Hashing the PDF into the fingerprint would remove that step.
 
 ### Update: Async cache writes
 
@@ -281,7 +288,7 @@ rag_request
 
 - **Latency split.** On a representative cache miss (7.43s total), embedding took 1.62s and generation 5.42s, so the ChromaDB query itself was only ~0.14s. Other misses ranged from ~3s to ~7s, so generation latency is the most variable cost. A cache hit is a single run with no children (~0.00s).
 - **A cache bug found via traces.** Comparing the recorded stream chunks against the stored Redis value showed that `" ".join(chunks)` corrupted cached answers ("Tie -Break"). Fixed with `"".join(chunks)`.
-- **A retrieval problem found via traces.** "What is a tiebreak?" kept giving incomplete, inconsistent answers. The trace showed the three retrieved chunks were the match tie-break and short-set variants, not the standard set tie-break rule. A diagnostic script (`check_retrieval.py`) showed that rule chunk (`chunk_5`) ranks 4th for "what is a tiebreak?" and "When is a tie-break played?", but 1st for "What happens when a set reaches 6-6?". The model's answers were faithful to the retrieved context, so this is a context-recall failure at k=3, not a hallucination.
+- **A retrieval problem found via traces.** "What is a tiebreak?" kept giving incomplete, inconsistent answers. The trace showed the three retrieved chunks were the match tie-break and short-set variants, not the standard set tie-break rule. An early diagnostic script (`check_retrieval.py`, since replaced by `eval_rag.py --ranks`) showed that rule chunk (`chunk_5`) ranked 4th for "what is a tiebreak?" and "When is a tie-break played?", but 1st for "What happens when a set reaches 6-6?". *These two figures are for different chunks, not conflicting measurements. `chunk_5` is the Rule 6b chunk (when a tie-break starts: "six games all"), which `--ranks` confirms is 1st for the 6-6 question. `chunk_3` is the Rule 5b chunk (the definition: "seven points wins the"), which `--ranks` puts 6th for "What is a tiebreak?". The early diagnostic was tracking the start-condition chunk; the eval set targets the definition chunk, which is the more precise answer to that question. I have not re-measured the original 4th-place figure for `chunk_5`.* The model's answers were faithful to the retrieved context, so this is a context-recall failure at k=3, not a hallucination.
 
 ### Technical decisions
 
@@ -331,6 +338,17 @@ Scoring was tightened after the second k=3 run (see Limitations). I re-scored al
 | Mean context chars | 2,592 | 7,322 |
 
 At k=3, when retrieval found the right chunk the answer was right (9/9 passed the check, 7 fully clean). When it didn't, the answer was wrong (0/4). Retrieval is the bottleneck, not generation.
+
+### Which saved report backs which claim
+
+| Claim | File in `eval_results/` | Notes |
+|---|---|---|
+| k=3 baseline: retrieval 9/13, answers 11/15 | `eval_20261016_135335_baseline_k3.json` | Answers came from the eval cache, so no latency or token data |
+| k=3 fresh rerun: 11/15 | `eval_20261017_101346_k3_fresh.json` | **The saved summary says 12/15.** That was scored before Q1's keyword check was tightened (a wrong answer matched "two" and "7"). `--rescore` gives 11/15; the saved file is left unedited as evidence. Cost figures at k=3 (735 prompt / 39 output tokens, 2.07s) come from this file |
+| k=8: retrieval 13/13, answers 15/15 | `eval_20261016_133920_k8.json` | Answers from cache |
+| k=8 fresh rerun: 15/15, cost figures | `eval_20261016_163457_k8_fresh.json` | 1,985 prompt / 67 output tokens, 2.36s median. Thinking tokens are only in the call log (`logs/sample_llm_calls.jsonl` has a trimmed sample) |
+
+To reproduce the corrected score: `python -m rag_chatbot.eval_rag --rescore rag_chatbot/eval_results/eval_20261017_101346_k3_fresh.json`
 
 ### Why retrieval missed
 

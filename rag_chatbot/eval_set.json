@@ -24,7 +24,7 @@
     "expected_phrase": "six games all, a tie-break game shall be played",
     "should_refuse": false,
     "source": "Rule 6b",
-    "note": "Related to Q1 (Rule 5b defines the tie-break; Rule 6b says when it starts), but phrased close to the PDF's own wording. Ranked 1st in check_retrieval.py, so it is the control for Q1."
+    "note": "Related to Q1 (Rule 5b defines the tie-break; Rule 6b says when it starts), but phrased close to the PDF's own wording. Ranked 1st when first checked (check_retrieval.py, since replaced by `--ranks`), so it is the control for Q1."
   },
   {
     "id": 3,

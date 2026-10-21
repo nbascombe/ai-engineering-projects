@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import redis.asyncio as redis
 import asyncio
+import hashlib
 from langsmith import wrappers, traceable
 from rag_chatbot.rag_common import MODEL, SYSTEM_INSTRUCTION, log_llm_call
 
@@ -22,6 +23,18 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 client = wrappers.wrap_gemini(genai.Client(api_key=os.getenv("GOOGLE_API_KEY")))
 
 r = redis.Redis(decode_responses=True)
+
+# Cache keys are namespaced and versioned: rag:<CACHE_VERSION>:<fingerprint>:<question>.
+# The fingerprint changes automatically when MODEL or SYSTEM_INSTRUCTION change, so stale
+# answers are never served after those edits. CACHE_VERSION covers what the fingerprint
+# can't see (retrieval k, chunk size, prompt template, source PDF): bump it by hand.
+CACHE_VERSION = "v1"
+_CACHE_FINGERPRINT = hashlib.sha256(f"{MODEL}|{SYSTEM_INSTRUCTION}".encode()).hexdigest()[:8]
+
+
+def make_cache_key(question_text):
+    """Normalised, namespaced Redis key for a question."""
+    return f"rag:{CACHE_VERSION}:{_CACHE_FINGERPRINT}:{question_text.lower()}"
 
 # asyncio only keeps weak references to tasks, so a fire-and-forget cache write
 # can be garbage-collected before it finishes. Hold a strong reference until done.
@@ -150,7 +163,7 @@ async def find_relevant_chunks_async(question, collection, n_results=3):
 
 @traceable(name="rag_request")
 async def generate_tokens(question):
-    cache_key = question.content.lower()
+    cache_key = make_cache_key(question.content)
     cache_response = await r.get(cache_key)
     if cache_response:
         yield cache_response
