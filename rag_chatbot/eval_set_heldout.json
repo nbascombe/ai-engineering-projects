@@ -1,0 +1,200 @@
+[
+  {
+    "id": 1,
+    "type": "numeric",
+    "question": "How long is a medical time-out?",
+    "expected_answer": "One medical time-out of three minutes, for a treatable medical condition.",
+    "must_contain": [
+      ["three minutes", "3 minutes", "three-minute", "3-minute"]
+    ],
+    "expected_phrase": "one medical time-out of three minutes",
+    "should_refuse": false,
+    "source": "Rule 29c"
+  },
+  {
+    "id": 2,
+    "type": "procedure",
+    "question": "In doubles, who serves in the third game of a set?",
+    "expected_answer": "The partner of the player who served in the first game.",
+    "must_contain": [
+      ["partner"],
+      ["first game"]
+    ],
+    "expected_phrase": "shall serve in the third game",
+    "should_refuse": false,
+    "source": "Rule 14"
+  },
+  {
+    "id": 3,
+    "type": "wording_mismatch",
+    "question": "If my opponent shouts on purpose to put me off in the middle of a rally, who gets the point?",
+    "expected_answer": "The hindered player wins the point (a deliberate act of the opponent is a hindrance).",
+    "must_contain": [
+      ["win", "wins", "awarded"],
+      ["point"]
+    ],
+    "expected_phrase": "hindered in playing the point by a deliberate act of the opponent",
+    "should_refuse": false,
+    "source": "Rule 26",
+    "note": "The rules never say 'shouts' or 'put me off'; they say 'hindered' and 'deliberate act'."
+  },
+  {
+    "id": 4,
+    "type": "scenario",
+    "question": "A bird flies into the path of the ball during a point. What happens?",
+    "expected_answer": "It is a hindrance and the point is replayed.",
+    "must_contain": [
+      ["replay", "replayed", "played again"]
+    ],
+    "expected_phrase": "hits a bird flying over the court",
+    "should_refuse": false,
+    "source": "Rule 26, Case 3",
+    "note": "Answer lives in a Case example, like dev Q13. Tests the same weakness on a different rule."
+  },
+  {
+    "id": 5,
+    "type": "lookup",
+    "question": "Can my coach give me advice during a match?",
+    "expected_answer": "On-court coaching is not permitted except in team events with a captain sitting on-court (when the sanctioning body allows it); never during the playing of a point.",
+    "must_contain": [
+      ["not permitted", "not allowed", "not during", "only", "sanctioning body"]
+    ],
+    "expected_phrase": [
+      "On-Court Coaching is not permitted",
+      "Coaching is not permitted during the playing of a point"
+    ],
+    "phrase_match": "any",
+    "should_refuse": false,
+    "source": "Rule 30 / Appendix IV",
+    "note": "The coaching text is repeated in Appendix IV, so any one phrase is enough. A good answer keeps the conditions (team events, sanctioning body); read by hand."
+  },
+  {
+    "id": 6,
+    "type": "variant_rules",
+    "question": "Can the balls be changed at the start of a tie-break?",
+    "expected_answer": "No. A ball change does not take place at the beginning of a tie-break game; it is delayed until the beginning of the second game of the next set.",
+    "must_contain": [
+      ["delayed", "postponed", "not take place", "shall not"],
+      ["second game", "next set"]
+    ],
+    "expected_phrase": "A ball change shall not take place at the beginning of a tie-break game",
+    "should_refuse": false,
+    "source": "Rule 3"
+  },
+  {
+    "id": 7,
+    "type": "lookup",
+    "question": "If my racket touches the net while the ball is still in play, what happens?",
+    "expected_answer": "You lose the point.",
+    "must_contain": [
+      ["lose", "loses", "lost"],
+      ["point"]
+    ],
+    "expected_phrase": "or the opponent’s court at any time while the ball is in play",
+    "should_refuse": false,
+    "source": "Rule 24g",
+    "note": "Chosen so its answer chunk competes with Rule 25a (net contact that is a good return)."
+  },
+  {
+    "id": 8,
+    "type": "lookup",
+    "question": "If my shot clips the top of the net and still lands in, is it good?",
+    "expected_answer": "Yes. It is a good return if the ball touches the net but passes over it and hits the ground within the correct court.",
+    "must_contain": [
+      ["good return", "good", "legal", "valid", "yes", "in play"]
+    ],
+    "expected_phrase": "provided that it passes over any of them",
+    "should_refuse": false,
+    "source": "Rule 25a",
+    "note": "Keyword check is loose (judgement answer, like dev Q6). Read by hand."
+  },
+  {
+    "id": 9,
+    "type": "wording_mismatch",
+    "question": "Can I volley the serve back?",
+    "expected_answer": "No. If the receiver returns the service before it bounces, the receiver loses the point.",
+    "must_contain": [
+      ["lose", "loses", "lost"],
+      ["point"]
+    ],
+    "expected_phrase": "The receiver returns the service before it bounces",
+    "should_refuse": false,
+    "source": "Rule 24e",
+    "note": "The PDF never says 'volley'."
+  },
+  {
+    "id": 10,
+    "type": "numeric",
+    "question": "How long can a tennis racket be?",
+    "expected_answer": "No more than 73.7 cm (29.0 inches) overall length.",
+    "must_contain": [
+      ["73.7", "29.0", "29 inches"]
+    ],
+    "expected_phrase": "shall not exceed 73.7 cm",
+    "should_refuse": false,
+    "source": "Appendix II (racket)"
+  },
+  {
+    "id": 11,
+    "type": "numeric",
+    "question": "Is there a break after the third set of a best-of-five match?",
+    "expected_answer": "Event organisers may allow a rest period of up to ten minutes, if announced in advance.",
+    "must_contain": [
+      ["ten", "10"],
+      ["announced", "organisers", "organizers"]
+    ],
+    "expected_phrase": "after the 3rd set in a best of 5 sets match",
+    "should_refuse": false,
+    "source": "Rule 29d",
+    "note": "A good answer keeps the condition (optional, announced in advance); read by hand."
+  },
+  {
+    "id": 12,
+    "type": "numeric",
+    "question": "How long can the warm-up last?",
+    "expected_answer": "A maximum of five minutes, unless the event organisers decide otherwise.",
+    "must_contain": [
+      ["five", "5"]
+    ],
+    "expected_phrase": "warm-up time shall be a maximum of five (5) minutes",
+    "should_refuse": false,
+    "source": "Rule 29e"
+  },
+  {
+    "id": 13,
+    "type": "variant_rules",
+    "question": "How do you win a game once it reaches deuce?",
+    "expected_answer": "By winning two consecutive points after deuce (advantage, then the game). The deciding-point version is an optional alternative procedure.",
+    "must_contain": [
+      ["advantage"],
+      ["two consecutive", "two points", "two in a row", "two straight"]
+    ],
+    "expected_phrase": "needs to win two consecutive points immediately after",
+    "should_refuse": false,
+    "source": "Rule 5a",
+    "note": "Trap: the PDF also describes an optional deciding point at deuce (alternative scoring). Same failure type as dev Q4 (optional rule presented as the default). Read by hand."
+  },
+  {
+    "id": 14,
+    "type": "out_of_scope_near_miss",
+    "question": "Who won the women's singles title at Wimbledon in 2024?",
+    "expected_answer": "Refusal: the rules document says nothing about tournament results.",
+    "must_contain": [],
+    "must_not_contain": ["Krejcikova", "Krejčíková"],
+    "expected_phrase": null,
+    "should_refuse": true,
+    "source": null,
+    "note": "Tennis question the rules PDF can't answer; the model may know the winner (Barbora Krejčíková) and be tempted."
+  },
+  {
+    "id": 15,
+    "type": "out_of_scope",
+    "question": "How do I hit a topspin backhand?",
+    "expected_answer": "Refusal: the rules of tennis do not contain coaching or technique advice.",
+    "must_contain": [],
+    "expected_phrase": null,
+    "should_refuse": true,
+    "source": null,
+    "note": "In-domain topic, but technique advice isn't in the rules."
+  }
+]

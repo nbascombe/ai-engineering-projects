@@ -17,6 +17,12 @@ eval_set.json fields (per question):
                     "any": any one phrase is enough (the PDF repeats the fact)
   should_refuse     true for out-of-scope questions
 
+Held-out validation:
+  --eval-set PATH    score a different question file (default eval_set.json). Use
+                     eval_set_heldout.json to test a setting (e.g. k=8) on questions it
+                     was not chosen on. Every mode (--ranks, --retrieval-only, --rescore)
+                     respects it, and the report records which file was used.
+
 Quota-friendly features:
   --retrieval-only   score retrieval only; makes no generation calls
   --ranks            rank of every answer chunk across the whole collection, plus the
@@ -35,6 +41,7 @@ Run from the repo root:
     python -m rag_chatbot.eval_rag --retrieval-only --k 8
     python -m rag_chatbot.eval_rag --runs 1 --label baseline_1run
     python -m rag_chatbot.eval_rag --runs 3 --label baseline
+    python -m rag_chatbot.eval_rag --eval-set rag_chatbot/eval_set_heldout.json --runs 1 --k 3 --label heldout_k3
     python -m rag_chatbot.eval_rag --compare rag_chatbot/eval_results/a.json rag_chatbot/eval_results/b.json
 """
 import os
@@ -188,6 +195,8 @@ def generate_answer(question, context, retries=2):
                 "latency_s": round(latency, 3),
                 "prompt_tokens": counts["prompt_tokens"],
                 "output_tokens": counts["output_tokens"],
+                "thinking_tokens": counts["thinking_tokens"],
+                "total_tokens": counts["total_tokens"],
             }
         except Exception as e:
             message = str(e)
@@ -371,6 +380,8 @@ def evaluate_question(item, collection, k, runs, delay, cache, state):
             "latency_s": entry.get("latency_s"),
             "prompt_tokens": entry.get("prompt_tokens"),
             "output_tokens": entry.get("output_tokens"),
+            "thinking_tokens": entry.get("thinking_tokens"),
+            "total_tokens": entry.get("total_tokens"),
         })
 
         # Pace only real, successful calls. Cache hits and errors need no delay.
@@ -424,11 +435,14 @@ def run_eval(k, runs, label, delay, max_calls, use_cache):
     latencies = [rr["latency_s"] for rr in good_runs if rr["latency_s"] is not None]
     prompt_tokens = [rr["prompt_tokens"] for rr in good_runs if rr["prompt_tokens"] is not None]
     output_tokens = [rr["output_tokens"] for rr in good_runs if rr["output_tokens"] is not None]
+    thinking_tokens = [rr["thinking_tokens"] for rr in good_runs if rr.get("thinking_tokens") is not None]
+    total_tokens = [rr["total_tokens"] for rr in good_runs if rr.get("total_tokens") is not None]
 
     return {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "label": label,
-        "config": {"model": MODEL, "k": k, "runs_per_question": runs, "delay_s": delay,
+        "config": {"model": MODEL, "eval_set": os.path.basename(EVAL_SET_PATH),
+                   "k": k, "runs_per_question": runs, "delay_s": delay,
                    "max_calls": max_calls, "cache_used": use_cache},
         "summary": {
             "retrieval_hit_rate": f"{retrieval_hits}/{len(retrieval_items)}",
@@ -441,6 +455,8 @@ def run_eval(k, runs, label, delay, max_calls, use_cache):
             "median_latency_s": round(statistics.median(latencies), 2) if latencies else None,
             "mean_prompt_tokens": round(statistics.mean(prompt_tokens)) if prompt_tokens else None,
             "mean_output_tokens": round(statistics.mean(output_tokens)) if output_tokens else None,
+            "mean_thinking_tokens": round(statistics.mean(thinking_tokens)) if thinking_tokens else None,
+            "mean_total_tokens": round(statistics.mean(total_tokens)) if total_tokens else None,
             "mean_context_chars": round(statistics.mean(r["context_chars"] for r in results)),
         },
         "results": results,
@@ -454,7 +470,7 @@ def fmt(v, suffix=""):
 
 def print_report(report):
     print("\n" + "=" * 78)
-    print(f"Eval: {report['label']}   k={report['config']['k']}   "
+    print(f"Eval: {report['label']}   set={report['config'].get('eval_set', 'eval_set.json')}   k={report['config']['k']}   "
           f"runs={report['config']['runs_per_question']}   {report['timestamp']}")
     print("=" * 78)
     print(f"{'Q':<3} {'type':<24} {'retrieval':<10} {'answer':<10} question")
@@ -480,6 +496,8 @@ def print_report(report):
           f"median latency {fmt(s['median_latency_s'], 's')}, "
           f"mean prompt {fmt(s['mean_prompt_tokens'])} tokens, "
           f"mean output {fmt(s['mean_output_tokens'])} tokens, "
+          f"mean thinking {fmt(s.get('mean_thinking_tokens'))} tokens, "
+          f"mean total {fmt(s.get('mean_total_tokens'))} tokens, "
           f"mean context {s['mean_context_chars']} chars")
     if s["errored_runs"]:
         print(f"\n  WARNING: {s['errored_runs']} runs hit API errors or were skipped, and are excluded from accuracy.")
@@ -572,9 +590,15 @@ def main():
                         help="show answer-chunk ranks across all chunks and the smallest k per question")
     parser.add_argument("--trace", action="store_true",
                         help="leave LangSmith tracing on (off by default for evals)")
+    parser.add_argument("--eval-set", metavar="PATH",
+                        help="question file to score (default eval_set.json); use eval_set_heldout.json for held-out validation")
     parser.add_argument("--compare", nargs=2, metavar=("BEFORE", "AFTER"), help="compare two saved result files")
     parser.add_argument("--rescore", metavar="REPORT", help="re-score a saved result file; no API calls")
     args = parser.parse_args()
+
+    global EVAL_SET_PATH
+    if args.eval_set:
+        EVAL_SET_PATH = os.path.abspath(args.eval_set)
 
     if args.compare:
         compare_reports(*args.compare)
