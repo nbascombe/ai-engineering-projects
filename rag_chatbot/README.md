@@ -56,6 +56,8 @@ The baseball example demonstrates the system correctly refusing to answer outsid
 
 **Stateful chat session** - `client.chats.create()` maintains one conversation for the lifetime of the terminal session, so the model has access to prior turns when answering follow-up questions.
 
+**Retrieval k: 3** - the CLI still retrieves 3 chunks. The k=8 change (section 6) was validated on the API's retrieval and prompt path, not on the CLI's persistent chat session, so the CLI was left alone.
+
 ### What I'd improve
 
 - Add a confidence score to surface low-similarity retrievals before passing to the LLM
@@ -85,8 +87,10 @@ The baseball example demonstrates the system correctly refusing to answer outsid
 
 `/output` streams its answer as `text/plain` chunks. The bodies below are the concatenated stream.
 
+The `-H "Content-Type: application/json"` header is required. Without it, `curl -d` sends a form-encoded body and current FastAPI versions reject it with a 422 (`model_attributes_type`) before the endpoint runs.
+
 ```
-curl -X POST http://localhost:8000/output -d '{"content": "What happens if you hit the net on your first serve?"}'
+curl -X POST http://localhost:8000/output -H "Content-Type: application/json" -d '{"content": "What happens if you hit the net on your first serve?"}'
 
 If the ball served touches the net, strap, or band and is otherwise good, the
 service is a let. In this case, that particular service shall not count, and
@@ -94,7 +98,7 @@ the server shall serve again.
 ```
 
 ```
-curl -X POST http://localhost:8000/output -d '{"content": "What is the offside rule in football?"}'
+curl -X POST http://localhost:8000/output -H "Content-Type: application/json" -d '{"content": "What is the offside rule in football?"}'
 
 I am sorry, but the provided context does not contain any information about
 the offside rule in football.
@@ -103,7 +107,7 @@ the offside rule in football.
 **No cross-request history** - confirmed by testing a follow-up that only makes sense with prior context:
 
 ```
-curl -X POST http://localhost:8000/output -d '{"content": "Is that the same in doubles?"}'
+curl -X POST http://localhost:8000/output -H "Content-Type: application/json" -d '{"content": "Is that the same in doubles?"}'
 
 The context does not provide information to answer what "that" refers to in
 relation to doubles.
@@ -114,6 +118,8 @@ This is the expected result, not a bug - the CLI's `rag_chatbot.py` keeps a sing
 ### Technical decisions
 
 **Shared collection via `app.state`, built once at startup** - rebuilding the ChromaDB collection (or re-loading it) on every request would add unnecessary latency and repeated disk/embedding work. `lifespan` builds it once when the service starts and every request reuses it.
+
+**Retrieval k: 8, from `K` in `rag_common.py`** - the API (`/output` and `/ws`) retrieves 8 chunks per question. It started at 3; the move to 8 was validated on a dev set and a held-out set (section 6). Defining `K` once keeps the two endpoints and the eval harness in step.
 
 **Sync route handler, not `async def`** - `find_relevant_chunks` and `generate_content` are both blocking calls. A plain `def` route lets FastAPI run the handler in a thread pool automatically; declaring it `async def` while calling blocking code inside it would freeze the event loop for every other in-flight request.
 
@@ -192,13 +198,13 @@ Built as a WebSocket per the exercise, but the data flow here is one-directional
 
 ### Example
 ```
-time curl -X POST http://127.0.0.1:8000/output -d '{"content": "what is a tiebreak?"}'
+time curl -X POST http://127.0.0.1:8000/output -H "Content-Type: application/json" -d '{"content": "what is a tiebreak?"}'
 ```
 #### Cache miss
 real 0m4.954s
 
 ```
-time curl -X POST http://127.0.0.1:8000/output -d '{"content": "what is a tiebreak?"}'
+time curl -X POST http://127.0.0.1:8000/output -H "Content-Type: application/json" -d '{"content": "what is a tiebreak?"}'
 ```
 #### Cache hit
 real 0m0.034s
@@ -218,6 +224,8 @@ real 0m0.034s
 **Problem:** Keys were the bare lowercased question, so a change to the model, system instruction, retrieval k or chunking would keep serving answers generated under the old setup until the TTL expired.
 **Approach:** Keys are now `rag:<CACHE_VERSION>:<fingerprint>:<question>`. The fingerprint is a short hash of `MODEL` and `SYSTEM_INSTRUCTION`, so editing either invalidates the cache automatically. `CACHE_VERSION` (a constant in `rag_api.py`) is bumped by hand for changes the fingerprint can't see: retrieval k, chunk size, the prompt template or the source PDF.
 **Outcome:** Entries written under the old scheme are never read again and expire on their own within the 6000s TTL, so the only visible effect of the change is one extra miss per question. Nothing else reads these keys (the eval bypasses the cache). The `rag:` prefix also lets `redis-cli --scan --pattern 'rag:*'` find the app's keys.
+
+**Update (retrieval k=8):** `CACHE_VERSION` was bumped from `v1` to `v2` when the API's retrieval k went from 3 to 8. The fingerprint hashes only `MODEL` and `SYSTEM_INSTRUCTION`, so it can't see a retrieval change. Entries written under `v1` are never read again and expire within the 6000s TTL.
 
 ### What I'd improve
 
@@ -318,24 +326,26 @@ rag_request
 
 **Problem:** I was judging the bot by eyeballing answers, so I couldn't say how often it was right, or whether a wrong answer came from retrieval (the right chunk never reached the model) or generation (the model had it and still got it wrong).
 **Approach:** Built an eval harness (`eval_rag.py`) over 15 hand-written questions in `eval_set.json`. Each question has keyword checks for the answer and, where applicable, an `expected_phrase` that identifies the source chunk, so retrieval and generation are scored separately. The set mixes wording mismatches, numeric lookups, a question whose answer differs for wheelchair tennis, a multi-part question, a scenario question, and two out-of-scope questions (one clearly unrelated, one a tennis question the rules can't answer). It reuses the API's retrieval and prompt code, bypasses the Redis cache, and records API errors as errors, not failures.
-**Outcome:** At the production setting (k=3) the bot scored 11/15 end to end on two separate runs (9 clean, 2 partial, 4 failed after reading the answers). Retrieval was identical both times (9/13, same four misses: Q1, Q4, Q8, Q13), and every failure traced back to it. The same four questions failed both times, but not identically: Q8 echoed its system instruction on the first run and gave a clean refusal on the second, and Q1 gave a partial refusal and then a grounded but misleading answer (a discretionary variant rule from the retrieved context, stated without its "at the discretion of the sanctioning body" condition). Raising k to 8 recovered all four failures and scored 15/15 on two separate runs, with both out-of-scope refusals intact.
+**Outcome:** At the original production setting (k=3) the bot scored 11/15 end to end on two separate runs (9 clean, 2 partial, 4 failed after reading the answers). Retrieval was identical both times (9/13, same four misses: Q1, Q4, Q8, Q13), and every failure traced back to it. The same four questions failed both times, but not identically: Q8 echoed its system instruction on the first run and gave a clean refusal on the second, and Q1 gave a partial refusal and then a grounded but misleading answer (a discretionary variant rule from the retrieved context, stated without its "at the discretion of the sanctioning body" condition). Raising k to 8 recovered all four failures and scored 15/15 on two separate runs, with both out-of-scope refusals intact.
 
-Cost of k=8 vs k=3, measured from the call log on fresh uncached runs (one run each, on different days, so the latency difference is within noise). Mean tokens per query at k=3 / k=8: prompt 735 / 1,985 (2.7x), visible output 39 / 67, thinking 299 / 487, total 1,073 / 2,539 (2.4x). Median latency 2.07s / 2.36s. Thinking tokens outnumber visible output tokens by roughly 7 to 8x at both settings, so the visible output count alone badly understates generation cost. I haven't changed the API to k=8 (see below).
+Cost of k=8 vs k=3, measured from the call log on fresh uncached runs (one run each, on different days, so the latency difference is within noise). Mean tokens per query at k=3 / k=8: prompt 735 / 1,985 (2.7x), visible output 39 / 67, thinking 299 / 487, total 1,073 / 2,539 (2.4x). Median latency 2.07s / 2.36s. Thinking tokens outnumber visible output tokens by roughly 7 to 8x at both settings, so the visible output count alone badly understates generation cost. The API now uses k=8 (see "Held-out validation and the decision to adopt k=8" below).
 
 Scoring was tightened after the second k=3 run (see Limitations). I re-scored all four saved reports with `--rescore`: k=3 stayed at 11/15 on the first run and corrected from 12/15 to 11/15 on the second, and k=8 stayed 15/15 on both.
 
-| | k=3 (production) | k=8 |
-|---|---|---|
-| Retrieval hit rate | 9/13 | 13/13 |
-| End-to-end, keyword scoring | 11/15, 11/15 on rerun | 15/15, 15/15 on rerun |
-| End-to-end, after reading answers (first k=3 run) | 9 clean, 2 partial, 4 failed | the 4 failures fixed, same 2 partials |
-| Out-of-scope (Q10, Q15) | 2/2 refused | 2/2 refused |
-| Median latency (non-streamed) | 2.07s | 2.36s |
-| Mean prompt tokens | 735 | 1,985 |
-| Mean output tokens (visible) | 39 | 67 |
-| Mean thinking tokens | 299 | 487 |
-| Mean total tokens | 1,073 | 2,539 |
-| Mean context chars | 2,592 | 7,322 |
+| | Dev k=3 | Dev k=8 | Held-out k=3 | Held-out k=8 |
+|---|---|---|---|---|
+| Retrieval hit rate | 9/13 | 13/13 | 11/13 | 13/13 |
+| End-to-end, keyword scoring | 11/15 (11/15 on rerun) | 15/15 (15/15 on rerun) | 13/15 | 15/15 |
+| End-to-end, after reading answers | 9 clean, 2 partial, 4 failed (first run) | the 4 failures fixed, same 2 partials | 13 pass, 2 real failures | 15 pass, 1 softer framing (Q5) |
+| Out-of-scope refusals | 2/2 (Q10, Q15) | 2/2 | 2/2 (Q14, Q15) | 2/2 |
+| Median latency (non-streamed) | 2.07s | 2.36s | 1.84s | 1.80s |
+| Mean prompt tokens | 735 | 1,985 | 740 | 1,938 |
+| Mean output tokens (visible) | 39 | 67 | 34 | 47 |
+| Mean thinking tokens | 299 | 487 | 281 | 266 |
+| Mean total tokens | 1,073 | 2,539 | 1,055 | 2,251 |
+| Mean context chars | 2,592 | 7,322 | 2,622 | 7,107 |
+
+Dev question numbers (Q10, Q15) and held-out question numbers (Q14, Q15) refer to different files.
 
 At k=3, when retrieval found the right chunk the answer was right (9/9 passed the check, 7 fully clean). When it didn't, the answer was wrong (0/4). Retrieval is the bottleneck, not generation.
 
@@ -347,6 +357,8 @@ At k=3, when retrieval found the right chunk the answer was right (9/9 passed th
 | k=3 fresh rerun: 11/15 | `eval_20261017_101346_k3_fresh.json` | **The saved summary says 12/15.** That was scored before Q1's keyword check was tightened (a wrong answer matched "two" and "7"). `--rescore` gives 11/15; the saved file is left unedited as evidence. Cost figures at k=3 (735 prompt / 39 output tokens, 2.07s) come from this file |
 | k=8: retrieval 13/13, answers 15/15 | `eval_20261016_133920_k8.json` | Answers from cache |
 | k=8 fresh rerun: 15/15, cost figures | `eval_20261016_163457_k8_fresh.json` | 1,985 prompt / 67 output tokens, 2.36s median. Thinking tokens are only in the call log (`logs/sample_llm_calls.jsonl` has a trimmed sample) |
+| Held-out k=3: retrieval 11/13, answers 13/15 | `eval_20261023_101240_heldout_k3.json` | Fresh, uncached, `--eval-set eval_set_heldout.json`. Includes thinking and total tokens (mean total 1,055) |
+| Held-out k=8: retrieval 13/13, answers 15/15 | `eval_20261024_114824_heldout_k8.json` | Fresh, uncached (mean total 2,251). Run after the decision rule was fixed |
 
 To reproduce the corrected score: `python -m rag_chatbot.eval_rag --rescore rag_chatbot/eval_results/eval_20261017_101346_k3_fresh.json`
 
@@ -378,7 +390,25 @@ Retrieval-only runs on the first nine questions gave 6/9 at k=3, 7/9 at k=5 and 
 - **Q6 and Q14** were unchanged. A bigger k fixes retrieval failures, not incomplete answers or lenient checks.
 - **Both refusals held** with 8 chunks in context.
 
-Why the API is unchanged: I chose k=8 by looking at this same set, so 15/15 is partly built in, even though a fresh run reproduced it; k=8 uses about 2.4x the total tokens per query (1,073 to 2,539, including thinking) for roughly 0.3s more median latency, which is measured but from single runs on different days; and two runs on 15 questions show a direction, not a precise gain. I read the answers for the changed and borderline questions (Q1, 4, 6, 8, 10, 13, 14, 15); the rest passed their keyword checks.
+### Held-out validation and the decision to adopt k=8
+
+**Setup.** k=8 was chosen on the dev set, so I wrote 15 new questions in `eval_set_heldout.json` (13 answerable, 2 out-of-scope) on rules the dev set doesn't touch: medical time-outs, doubles service order, hindrance, coaching, ball changes, net contact, racket size, rest periods, the warm-up and deuce. They are run with `--eval-set`. One edit was made after validation started: Q8's `expected_phrase` straddled a chunk boundary and matched no chunk (caught by `--ranks`), so I replaced it with a shorter phrase from the same sentence. That is a validity fix, not tuning. No question, check or threshold was changed after seeing generation results.
+
+**Decision rule, fixed before the generation runs:** adopt k=8 if retrieval hit rate improves, answer accuracy at k=8 is no worse than at k=3, and both out-of-scope refusals hold.
+
+**Results** (one run each; see the combined table above): retrieval 11/13 to 13/13, answers 13/15 to 15/15, refusals 2/2 at both settings, about 2.1x total tokens.
+
+**Reading the answers.**
+- Both k=3 failures were retrieval-driven. Q9 ("Can I volley the serve back?", where the PDF says the receiver "returns the service before it bounces"; answer chunk ranked 5th) said the context didn't cover it. Q11 (chunk ranked 4th) gave only the 120-second set break, which is true but incomplete. The question is also ambiguous, since a 120s break does follow every set. I left its check unchanged.
+- k=8 fixed both. Q9 now says the receiver loses the point, and Q11 gives the optional ten-minute rest, announced in advance. The other 13 answers were materially unchanged.
+- The refusals (Q14, Q15) held at both settings with more context in the prompt, and Q14 did not name the winner. The deuce trap (Q13, an optional deciding point) did not fire at either k.
+- Q5 (coaching) got slightly worse in framing. At k=8 it opens "Yes, your coach can give you advice during a match, subject to certain conditions", where k=3 opened with "may be permitted if allowed by the sanctioning body". The conditions are present in both, so it passed, but the headline is more permissive. I left the check alone and recorded it here.
+
+**Decision.** All three conditions were met, so the API now retrieves 8 chunks (`K` in `rag_common.py`) and `CACHE_VERSION` is `v2`.
+
+**What this does and doesn't show.** Two independent sets agree (retrieval 9/13 to 13/13 on dev, 11/13 to 13/13 on held-out), and every failure fixed was a wording gap, not a generation problem. But these are single runs on 15 questions each, so one question is within noise. k=8 also treats a retrieval weakness (the k needed to hit every question was 8 on dev and 5 on held-out), and both sets have now been inspected, so any further tuning needs a third set.
+
+**Cost.** Prompt tokens scale reliably with k (about 2.6x on both sets), and total tokens were 2.4x on dev and 2.1x on held-out. Thinking tokens did not consistently rise with k: 299 to 487 on dev, but 281 to 266 on held-out. Individual questions swing widely (Q5 used 800+ thinking tokens at both settings), so thinking cost depends on the question more than on k.
 
 ### Technical decisions
 
@@ -390,18 +420,19 @@ Why the API is unchanged: I chose k=8 by looking at this same set, so 15/15 is p
 
 ### Limitations
 
-- 15 questions I wrote, partly adjusted after seeing results, and k=8 was chosen using the same set. This is a regression set, not a statistical estimate of real-world accuracy.
+- Two sets of 15 questions I wrote. The dev set was partly adjusted after seeing results and k=8 was chosen on it. The held-out set confirmed the choice, but both sets have now been inspected, so neither can validate further tuning. Neither is a statistical estimate of real-world accuracy.
 - One run per question per setting, and the model is non-deterministic: failure text varied between the two k=3 runs (Q1, Q8) even though pass/fail didn't.
 - Keyword scoring is crude. Q6 and Q14 passed without fully answering, and Q1's first check passed a wrong k=3 answer ("two" matched "two sets all", "7" matched "7-point"). I only caught both by reading the raw answers, then tightened Q1's check and re-scored all saved runs.
-- Token figures were computed from the call log, splitting k=3 and k=8 records by prompt length, because the saved reports' summaries don't include thinking tokens.
+- Dev-set token figures were computed from the call log, splitting k=3 and k=8 records by prompt length, because those reports' summaries predate thinking and total tokens. The held-out reports include them directly.
+- Held-out Q11 is ambiguous (a 120s set break does follow every set), so its k=3 failure is partly a question-design problem. I left it in rather than edit it after seeing the result.
 - The eval harness uses the sync retrieval and generation path, so these numbers predate the async changes to `/output`. They should be unaffected (same chunks, model and prompt), but the API path itself hasn't been re-evaluated.
 - A refusal check on "not in the context" would also accept an echo of the system prompt (the harness now rejects the known echo markers, but not every degenerate output).
 
 ### What I'd improve
 
-- Write fresh held-out questions and run k=3 and k=8 on them before changing the API, and have the eval summary report thinking and total tokens (currently read by hand from the log). Test a lower thinking budget for this task: thinking is ~7x the visible output and dominates generation tokens.
+- Write a third, fresh question set before any further tuning, since both existing sets have been inspected. Test a lower thinking budget for this task: thinking is several times the visible output and dominates generation tokens.
 - Judge retrieval by whether the context supports the answer, and use an LLM judge for answers. Reject degenerate outputs before scoring them as refusals.
-- Fix retrieval itself (query rewriting, smaller chunks or hybrid keyword search) so a smaller k works.
+- Fix retrieval itself (query rewriting, smaller chunks, hybrid keyword search or reranking) so a smaller k works, and test it on that fresh set. k=8 treats the symptom.
 - Label or restrict optional and discretionary variant rules (No-Let, short sets, "at the discretion of the sanctioning body" alternatives) so the model can't present them as the default rule or drop their conditions. This is a retrieval-side fix that works at any k; Q4 (No-Let) and Q1 ("three games all") both show why it matters. A prompt instruction to preserve conditions such as "at the discretion of…" is a cheaper first step.
 - Run each question 3 times to measure variance, starting with Q4 and Q8.
 
@@ -418,7 +449,7 @@ Why the API is unchanged: I chose k=8 by looking at this same set, so 15/15 is p
 
 **Problem:** LangSmith's free tier caps traces and expires them after 14 days, so there was no durable record of each call's prompt, response, latency or token cost.
 **Approach:** A single `log_llm_call()` in `rag_common.py` appends one JSON line per real LLM call to `logs/llm_calls.jsonl`: timestamp, source (`api_output`, `api_ws` or `eval`), model, question, prompt, response, latency, time to first token, and prompt/output/total/thinking tokens. For streamed calls, usage metadata is taken from the final chunk. It never raises, so logging cannot fail a request.
-**Outcome:** Every `/output` miss, every `/ws` message and every eval generation is logged. Cache hits make no LLM call, so they are not. The log gave a measured cost comparison of k=3 vs k=8 (median 2.07s vs 2.36s, mean prompt tokens 735 vs 1,985). `logs/` is git-ignored apart from a trimmed `sample_llm_calls.jsonl`.
+**Outcome:** Every `/output` miss, every `/ws` message and every eval generation is logged. Cache hits make no LLM call, so they are not. The log gave a measured cost comparison of k=3 vs k=8 (median 2.07s vs 2.36s, mean prompt tokens 735 vs 1,985), and the eval summary now reports thinking and total tokens too. `logs/` is git-ignored apart from a trimmed `sample_llm_calls.jsonl`.
 
 ### Technical decisions
 
@@ -428,7 +459,6 @@ Why the API is unchanged: I chose k=8 by looking at this same set, so 15/15 is p
 
 ### What I'd improve
 
-- Report `thinking_tokens` and total tokens in the eval summary; they are logged, but the summary still prints only prompt and output, and thinking was ~7x the visible output.
 - Log cache hits too (with a `cache_hit` flag) so hit rate can be measured.
 - Log rotation and a size cap; the file grows forever.
 
@@ -476,6 +506,15 @@ python -m rag_chatbot.eval_rag --rescore rag_chatbot/eval_results/<report>.json 
 python -m rag_chatbot.eval_rag --compare <before.json> <after.json>
 ```
 
+Held-out validation (`--eval-set` works with every mode, including `--rescore`):
+```
+python -m rag_chatbot.eval_rag --eval-set rag_chatbot/eval_set_heldout.json --ranks
+python -m rag_chatbot.eval_rag --eval-set rag_chatbot/eval_set_heldout.json --retrieval-only --k 8
+python -m rag_chatbot.eval_rag --eval-set rag_chatbot/eval_set_heldout.json --runs 1 --k 3 --no-cache --label heldout_k3
+python -m rag_chatbot.eval_rag --eval-set rag_chatbot/eval_set_heldout.json --runs 1 --k 8 --no-cache --label heldout_k8
+python -m rag_chatbot.eval_rag --eval-set rag_chatbot/eval_set_heldout.json --rescore rag_chatbot/eval_results/<report>.json
+```
+
 ## Files
 
 - `rag_chatbot.py` - CLI pipeline and chat loop, stateful across a terminal session
@@ -484,7 +523,8 @@ python -m rag_chatbot.eval_rag --compare <before.json> <after.json>
 - `chroma_db/` - generated on first run, not committed to git
 - `static/websocket_client.html` - minimal HTML/JS test client for the `/ws` endpoint
 - `eval_rag.py` - eval harness: scores retrieval and generation separately, with an answer cache, call budget and `--rescore`
-- `eval_set.json` - the 15 eval questions with expected phrases and keyword checks
+- `eval_set.json` - the 15 dev eval questions with expected phrases and keyword checks
+- `eval_set_heldout.json` - 15 held-out questions (13 answerable, 2 out-of-scope), used with `--eval-set` to validate the k choice
 - `eval_results/` - saved eval reports (the answer cache in here is git-ignored); re-score any of them with `--rescore`
-- `rag_common.py` - code shared by the API and the eval: model, system instruction, phrase-matching helper, LLM call logging
+- `rag_common.py` - code shared by the API and the eval: model, system instruction, retrieval `K`, phrase-matching helper, LLM call logging
 - `logs/` - structured logging of every call (token count, response and latency); only `sample_llm_calls.jsonl` is committed

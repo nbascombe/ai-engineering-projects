@@ -145,7 +145,7 @@ cache hit.
 **Outcome:** Two simultaneous uncached requests to `/output` (cache keys cleared first) finished in 1.87s and 2.74s, against a ~3s average for a single miss, so they overlap rather than queue. One manual run, no sync-version baseline for comparison. Not yet confirmed that LangSmith's `wrap_gemini` traces the `aio` streaming path.
 
 **Why this matters:**
-Same retrieval quality as Project 4, now reachable by any client over HTTP.
+Same pipeline as Project 4, now reachable by any client over HTTP. The API retrieves 8 chunks per question (validated in Project 10), while the CLI still uses 3.
 
 ---
 
@@ -223,8 +223,8 @@ This is the first project in the repo where the model itself decides whether ext
 
 ### 10. Eval Harness (`rag_chatbot/eval_rag.py`)
 **Problem:** I was judging the RAG bot by eyeballing answers, so I couldn't say how often it was right or whether a failure came from retrieval or generation.
-**Approach:** An eval harness over 15 hand-written questions that scores retrieval (does the right chunk reach the model?) and generation (is the answer right?) separately. It reuses the production pipeline code, treats API errors as errors not failures, and caches answers so quota-limited reruns only pay for what is missing. Saved reports can be re-scored with `--rescore` after a check is tightened.
-**Outcome:** At the production setting (k=3), retrieval hit 9/13 and answers scored 11/15 on two separate runs. Every failure traced back to retrieval, caused by vocabulary the PDF doesn't use and by answers buried in example cases. One of them (Q4) was a stable confident wrong answer from an optional rule. At k=8, retrieval hit 13/13 and answers scored 15/15 on two separate runs, with both out-of-scope refusals intact. Measured cost of k=8 vs k=3: 2.4x the total tokens per query including thinking (2,539 vs 1,073; prompt alone 2.7x) for about 0.3s more median latency (2.36s vs 2.07s). Reading the raw answers exposed a false pass in my own keyword check (Q1), so I tightened it and re-scored all saved runs, which left the k=8 numbers unchanged and corrected the second k=3 run from 12/15 to 11/15. k=8 was chosen using the same 15 questions, so the API stays at k=3 until it is tested on held-out questions. Details in `rag_chatbot/README.md`, section 6.
+**Approach:** An eval harness over 15 hand-written dev questions, plus a separate 15-question held-out set (`--eval-set`), that scores retrieval (does the right chunk reach the model?) and generation (is the answer right?) separately. It reuses the production pipeline code, treats API errors as errors not failures, and caches answers so quota-limited reruns only pay for what is missing. Saved reports can be re-scored with `--rescore` after a check is tightened.
+**Outcome:** At the production setting (k=3), retrieval hit 9/13 and answers scored 11/15 on two separate runs. Every failure traced back to retrieval, caused by vocabulary the PDF doesn't use and by answers buried in example cases. One of them (Q4) was a stable confident wrong answer from an optional rule. At k=8, retrieval hit 13/13 and answers scored 15/15 on two separate runs, with both out-of-scope refusals intact. Measured cost of k=8 vs k=3: 2.4x the total tokens per query including thinking (2,539 vs 1,073; prompt alone 2.7x) for about 0.3s more median latency (2.36s vs 2.07s). Reading the raw answers exposed a false pass in my own keyword check (Q1), so I tightened it and re-scored all saved runs, which left the k=8 numbers unchanged and corrected the second k=3 run from 12/15 to 11/15. k=8 was chosen on the dev questions, so I validated it on 15 new held-out questions against a decision rule fixed beforehand: retrieval went 11/13 to 13/13 and answers 13/15 to 15/15, both refusals held, at about 2.1x total tokens. The API now retrieves 8 chunks. Details in `rag_chatbot/README.md`, section 6.
 
 **Concepts covered:**
 - Separating retrieval metrics from generation metrics
@@ -232,6 +232,7 @@ This is the first project in the repo where the model itself decides whether ext
 - Validating the evaluator itself (expected phrases, reading raw answers, re-scoring after tightening a check)
 - Treating API errors separately from model failures
 - Caching and call budgets for quota-limited evaluation
+- Held-out validation: choosing a setting on one question set and confirming it on another, with the decision rule fixed in advance
 
 ---
 
@@ -258,7 +259,7 @@ This is the first project in the repo where the model itself decides whether ext
 - `rag_chatbot/rag_api.py` - same RAG pipeline as an HTTP service, stateless per request, Pydantic-validated. `/output` is fully async (async embedding, Chroma query via `asyncio.to_thread`, `client.aio` streaming) with Redis cache-aside caching on a namespaced, versioned key (`rag:<version>:<fingerprint>:<question>`): ~0.05s on a hit vs ~3.2s on a miss (~64x, N=10, mean). Two simultaneous misses overlapped (1.87s and 2.74s) rather than queueing. Cache writes are fire-and-forget tasks held in a set until done, and empty responses aren't cached.
 - `rag_chatbot/rag_api.py` `/ws` - same pipeline again, now stateful per connection and fully async (`client.aio`), proving why sync calls inside `async def` WebSocket handlers block every other connected client.
 - `tennis_tool_agent.py` - tool-use / function-calling project, now with three tools (live weather, deterministic set scoring, local document lookup) and a bounded ReAct loop (`for i in range(5)`) that lets the model chain multiple tool calls before answering. Confirmed via a deliberately three-tool question that the model calls tools in parallel where needed and correctly withholds a tool call when it can answer from its own knowledge instead.
-- `rag_chatbot/eval_rag.py` - eval harness for the RAG bot: retrieval and generation scored separately over 15 questions, answer cache and call budget for the free tier, and `--rescore` to re-apply scoring to saved reports. k=3 scored 11/15 on two runs with all failures traced to retrieval; k=8 scored 15/15 on two runs (about 2.4x the total tokens including thinking, ~0.3s more median latency). Not yet validated on held-out questions.
+- `rag_chatbot/eval_rag.py` - eval harness for the RAG bot: retrieval and generation scored separately over 15 questions, answer cache and call budget for the free tier, and `--rescore` to re-apply scoring to saved reports. k=3 scored 11/15 on two runs with all failures traced to retrieval; k=8 scored 15/15 on two runs (about 2.4x the total tokens including thinking, ~0.3s more median latency). Validated on a separate 15-question held-out set (k=3: 11/13 retrieval, 13/15 answers; k=8: 13/13, 15/15), after which the API moved to k=8.
 
 ---
 
@@ -321,6 +322,7 @@ python -m rag_chatbot.eval_rag --runs 1 --label baseline_k3
 python -m rag_chatbot.eval_rag --runs 1 --k 3 --no-cache --label k3_fresh
 python -m rag_chatbot.eval_rag --runs 1 --k 8 --no-cache --label k8_fresh
 python -m rag_chatbot.eval_rag --rescore rag_chatbot/eval_results/<report>.json
+python -m rag_chatbot.eval_rag --eval-set rag_chatbot/eval_set_heldout.json --runs 1 --k 8 --no-cache --label heldout_k8
 ```
 FastAPI service (runs on http://localhost:8000):
 ```
