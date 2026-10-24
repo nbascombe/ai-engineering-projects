@@ -1,0 +1,450 @@
+{
+  "timestamp": "2026-10-24T11:48:24",
+  "label": "heldout_k8",
+  "config": {
+    "model": "gemini-2.5-flash",
+    "eval_set": "eval_set_heldout.json",
+    "k": 8,
+    "runs_per_question": 1,
+    "delay_s": 7.0,
+    "max_calls": 18,
+    "cache_used": false
+  },
+  "summary": {
+    "retrieval_hit_rate": "13/13",
+    "answer_accuracy_strict": "15/15 complete questions",
+    "answer_pass_rate_per_run": "15/15 scored runs",
+    "errored_runs": 0,
+    "incomplete_questions": [],
+    "new_api_calls": 15,
+    "answers_from_cache": 0,
+    "median_latency_s": 1.8,
+    "mean_prompt_tokens": 1938,
+    "mean_output_tokens": 47,
+    "mean_thinking_tokens": 266,
+    "mean_total_tokens": 2251,
+    "mean_context_chars": 7107
+  },
+  "results": [
+    {
+      "id": 1,
+      "type": "numeric",
+      "question": "How long is a medical time-out?",
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "retrieval_s": 0.565,
+      "context_chars": 7449,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "A medical time-out is three minutes.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": 1.692,
+          "prompt_tokens": 2004,
+          "output_tokens": 9,
+          "thinking_tokens": 144,
+          "total_tokens": 2157
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "procedure",
+      "question": "In doubles, who serves in the third game of a set?",
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "retrieval_s": 0.389,
+      "context_chars": 7495,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "In doubles, the partner of the player who served in the first game shall serve in the third game.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": 1.817,
+          "prompt_tokens": 1931,
+          "output_tokens": 21,
+          "thinking_tokens": 279,
+          "total_tokens": 2231
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "wording_mismatch",
+      "question": "If my opponent shouts on purpose to put me off in the middle of a rally, who gets the point?",
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "retrieval_s": 0.387,
+      "context_chars": 6666,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "If a player is hindered in playing the point by a deliberate act of the opponent(s), the player shall win the point.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": 1.821,
+          "prompt_tokens": 1829,
+          "output_tokens": 26,
+          "thinking_tokens": 256,
+          "total_tokens": 2111
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "scenario",
+      "question": "A bird flies into the path of the ball during a point. What happens?",
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "retrieval_s": 0.507,
+      "context_chars": 6224,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "If a ball in play hits a bird flying over the court, it is considered a hindrance and the point shall be replayed.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": 1.803,
+          "prompt_tokens": 1703,
+          "output_tokens": 26,
+          "thinking_tokens": 279,
+          "total_tokens": 2008
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "lookup",
+      "question": "Can my coach give me advice during a match?",
+      "retrieval_hit": true,
+      "retrieval_rank": 2,
+      "retrieval_s": 0.781,
+      "context_chars": 5325,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "Yes, your coach can give you advice during a match, subject to certain conditions.\n\nCoaching, defined as advice or instruction of any kind, may be permitted by the sanctioning body concerned.\n\nHere's when it is permitted:\n*   Between points\n*   At change of ends and set breaks\n*   At any other time (except during the playing of a point) permitted by the sanctioning body\n\nCoaching is **not permitted during the playing of a point**.\n\nHow advice can be communicated:\n*   For Off-Court Coaching and On-Court Coaching between points, communication may be verbal (when the coach(es) and player(s) are at the same end of the court) or by hand signals (at any time when coaching is permitted) only.\n\nConditions for communication:\n*   Off-Court Coaching, and On-Court Coaching between points, must be brief (except during breaks in play) and discreet.\n\nRegarding On-Court Coaching:\n*   In team events only, where there is a team captain sitting on-court, the team captain may give Coaching to the player(s) at such times as permitted by the sanctioning body concerned.\n*   In all other competitions, On-Court Coaching is not permitted.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": 5.202,
+          "prompt_tokens": 1385,
+          "output_tokens": 263,
+          "thinking_tokens": 813,
+          "total_tokens": 2461
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "variant_rules",
+      "question": "Can the balls be changed at the start of a tie-break?",
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "retrieval_s": 0.376,
+      "context_chars": 7060,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "No, a ball change shall not take place at the beginning of a tie-break game. If a ball change is due, it shall be delayed until the beginning of the second game of the next set. Also, balls should not be changed before the start of a match tie-break even if a ball change is due.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": 1.739,
+          "prompt_tokens": 1915,
+          "output_tokens": 66,
+          "thinking_tokens": 136,
+          "total_tokens": 2117
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "lookup",
+      "question": "If my racket touches the net while the ball is still in play, what happens?",
+      "retrieval_hit": true,
+      "retrieval_rank": 3,
+      "retrieval_s": 0.394,
+      "context_chars": 6528,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "If your racket touches the net while the ball is still in play, you lose the point.\n\nFor example, if a server's racket falls out of their hand and touches the net before the ball has bounced, the server loses the point because the racket touched the net while the ball was in play.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": 2.12,
+          "prompt_tokens": 1737,
+          "output_tokens": 62,
+          "thinking_tokens": 314,
+          "total_tokens": 2113
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "lookup",
+      "question": "If my shot clips the top of the net and still lands in, is it good?",
+      "retrieval_hit": true,
+      "retrieval_rank": 3,
+      "retrieval_s": 0.376,
+      "context_chars": 5522,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "Yes, if the ball touches the net and passes over it to hit the ground within the correct court, it is a good return.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": 1.732,
+          "prompt_tokens": 1476,
+          "output_tokens": 27,
+          "thinking_tokens": 245,
+          "total_tokens": 1748
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "wording_mismatch",
+      "question": "Can I volley the serve back?",
+      "retrieval_hit": true,
+      "retrieval_rank": 5,
+      "retrieval_s": 0.442,
+      "context_chars": 7543,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "No, you cannot volley the serve back. The receiver loses the point if they return the service before it bounces.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": 2.088,
+          "prompt_tokens": 1979,
+          "output_tokens": 23,
+          "thinking_tokens": 260,
+          "total_tokens": 2262
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "numeric",
+      "question": "How long can a tennis racket be?",
+      "retrieval_hit": true,
+      "retrieval_rank": 2,
+      "retrieval_s": 0.363,
+      "context_chars": 7966,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "The racket shall not exceed 73.7 cm (29.0 inches) in overall length.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": 1.327,
+          "prompt_tokens": 2273,
+          "output_tokens": 22,
+          "thinking_tokens": 152,
+          "total_tokens": 2447
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "numeric",
+      "question": "Is there a break after the third set of a best-of-five match?",
+      "retrieval_hit": true,
+      "retrieval_rank": 4,
+      "retrieval_s": 0.67,
+      "context_chars": 7862,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "Event organisers may allow a rest period of a maximum of ten (10) minutes after the 3rd set in a best of 5 sets match, if this is announced in advance of the event.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": 1.744,
+          "prompt_tokens": 2190,
+          "output_tokens": 42,
+          "thinking_tokens": 246,
+          "total_tokens": 2478
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "numeric",
+      "question": "How long can the warm-up last?",
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "retrieval_s": 0.631,
+      "context_chars": 7971,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "The warm-up time shall be a maximum of five (5) minutes, unless otherwise decided by the event organisers.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": 1.23,
+          "prompt_tokens": 2177,
+          "output_tokens": 24,
+          "thinking_tokens": 116,
+          "total_tokens": 2317
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "variant_rules",
+      "question": "How do you win a game once it reaches deuce?",
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "retrieval_s": 0.369,
+      "context_chars": 7506,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "After \"Deuce,\" the score is \"Advantage\" for the player/team who wins the next point. If that same player/team also wins the subsequent point, they win the \"Game.\" A player/team needs to win two consecutive points immediately after \"Deuce\" to win the \"Game.\"",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": 2.275,
+          "prompt_tokens": 2116,
+          "output_tokens": 63,
+          "thinking_tokens": 311,
+          "total_tokens": 2490
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "out_of_scope_near_miss",
+      "question": "Who won the women's singles title at Wimbledon in 2024?",
+      "retrieval_hit": null,
+      "retrieval_rank": null,
+      "retrieval_s": 0.372,
+      "context_chars": 7037,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "The answer is not in the context.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": 1.425,
+          "prompt_tokens": 2029,
+          "output_tokens": 8,
+          "thinking_tokens": 202,
+          "total_tokens": 2239
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "out_of_scope",
+      "question": "How do I hit a topspin backhand?",
+      "retrieval_hit": null,
+      "retrieval_rank": null,
+      "retrieval_s": 0.375,
+      "context_chars": 8449,
+      "runs": 1,
+      "runs_scored": 1,
+      "runs_errored": 0,
+      "runs_passed": 1,
+      "complete": true,
+      "all_runs_passed": true,
+      "run_results": [
+        {
+          "answer": "The context provided does not contain information on how to hit a topspin backhand.",
+          "errored": false,
+          "passed": true,
+          "fail_reason": "",
+          "latency_s": 1.835,
+          "prompt_tokens": 2330,
+          "output_tokens": 17,
+          "thinking_tokens": 238,
+          "total_tokens": 2585
+        }
+      ]
+    }
+  ]
+}

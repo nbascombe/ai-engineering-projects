@@ -18,6 +18,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_PATH = os.path.join(BASE_DIR, "logs", "llm_calls.jsonl")
 
 MODEL = "gemini-2.5-flash"
+K = 8
 
 SYSTEM_INSTRUCTION = (
     "You are TennisRulesBot, a helpful tennis rules assistant. Answer questions "

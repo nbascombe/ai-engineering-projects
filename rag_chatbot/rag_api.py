@@ -14,7 +14,7 @@ import redis.asyncio as redis
 import asyncio
 import hashlib
 from langsmith import wrappers, traceable
-from rag_chatbot.rag_common import MODEL, SYSTEM_INSTRUCTION, log_llm_call
+from rag_chatbot.rag_common import MODEL, SYSTEM_INSTRUCTION, K, log_llm_call
 
 load_dotenv()
 
@@ -28,7 +28,7 @@ r = redis.Redis(decode_responses=True)
 # The fingerprint changes automatically when MODEL or SYSTEM_INSTRUCTION change, so stale
 # answers are never served after those edits. CACHE_VERSION covers what the fingerprint
 # can't see (retrieval k, chunk size, prompt template, source PDF): bump it by hand.
-CACHE_VERSION = "v1"
+CACHE_VERSION = "v2"
 _CACHE_FINGERPRINT = hashlib.sha256(f"{MODEL}|{SYSTEM_INSTRUCTION}".encode()).hexdigest()[:8]
 
 
@@ -120,7 +120,7 @@ def load_or_build_collection(chromadb_client, chunks):
         return embed_and_store(chunks, chromadb_client)
 
 @traceable(run_type="retriever", name="retrieve_chunks")
-def find_relevant_chunks(question, collection, n_results=3):
+def find_relevant_chunks(question, collection, n_results=K):
     """For an embedded question query the ChromaDB collection and return the n top results.
 
     Sync version, kept for the CLI and eval_rag.py. Async routes should use
@@ -151,7 +151,7 @@ async def embed_text_async(text):
 
 # Traced like the sync version so the trace tree keeps its retrieve_chunks run.
 @traceable(run_type="retriever", name="retrieve_chunks")
-async def find_relevant_chunks_async(question, collection, n_results=3):
+async def find_relevant_chunks_async(question, collection, n_results=K):
     """Async retrieval: async embed, then the Chroma query off the event loop."""
     question_embedding = await embed_text_async(question)
     results = await asyncio.to_thread(
@@ -169,7 +169,7 @@ async def generate_tokens(question):
         yield cache_response
     else:
         # Async retrieval and async streaming, so nothing here blocks the event loop.
-        context = await find_relevant_chunks_async(question.content, app.state.collection, 3)
+        context = await find_relevant_chunks_async(question.content, app.state.collection, K)
         prompt = build_prompt(context, question.content)
         start = time.perf_counter()
         first_token_at = None
@@ -244,7 +244,7 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             question = await websocket.receive_text()
-            context = await find_relevant_chunks_async(question, app.state.collection, 3)
+            context = await find_relevant_chunks_async(question, app.state.collection, K)
             prompt = build_prompt(context, question)
             start = time.perf_counter()
             first_token_at = None
