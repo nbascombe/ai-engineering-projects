@@ -84,6 +84,7 @@ REFUSAL_MARKERS = [
 DEGENERATE_MARKERS = [
     "you are tennisrulesbot",
     "answer questions using only the context provided",
+    "if the answer is not in the context, say so",
 ]
 
 MAX_CONSECUTIVE_ERRORS = 3   # stop calling the API after this many errors in a row
