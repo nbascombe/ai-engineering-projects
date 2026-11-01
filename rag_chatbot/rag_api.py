@@ -14,7 +14,8 @@ import redis.asyncio as redis
 import asyncio
 import hashlib
 from langsmith import wrappers, traceable
-from rag_chatbot.rag_common import MODEL, SYSTEM_INSTRUCTION, K, log_llm_call
+from rag_chatbot.rag_common import MODEL, SYSTEM_INSTRUCTION, K, STALE_TTL_S, log_llm_call
+from rag_chatbot.fallback import stream_with_fallback
 
 load_dotenv()
 
@@ -35,6 +36,17 @@ _CACHE_FINGERPRINT = hashlib.sha256(f"{MODEL}|{SYSTEM_INSTRUCTION}".encode()).he
 def make_cache_key(question_text):
     """Normalised, namespaced Redis key for a question."""
     return f"rag:{CACHE_VERSION}:{_CACHE_FINGERPRINT}:{question_text.lower()}"
+
+
+def make_stale_key(question_text):
+    """Long-lived 'last known good' copy, only read when every model tier has failed."""
+    return f"rag:stale:{CACHE_VERSION}:{_CACHE_FINGERPRINT}:{question_text.lower()}"
+
+
+FALLBACK_NOTICE = "(Answered by a backup model because the primary is unavailable.)\n\n"
+STALE_NOTICE = "(Served from a saved answer; the live service is degraded.)\n\n"
+DEGRADED_MESSAGE = ("The service is temporarily degraded and I can't answer this "
+                    "question right now. Please try again in a few minutes.")
 
 # asyncio only keeps weak references to tasks, so a fire-and-forget cache write
 # can be garbage-collected before it finishes. Hold a strong reference until done.
@@ -161,52 +173,92 @@ async def find_relevant_chunks_async(question, collection, n_results=K):
     )
     return results['documents'][0]
 
+def _cache_in_background(key, value, ex):
+    """Fire-and-forget Redis write, with a strong reference held until it finishes."""
+    task = asyncio.create_task(r.set(key, value, ex=ex))
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
+
 @traceable(name="rag_request")
 async def generate_tokens(question):
     cache_key = make_cache_key(question.content)
     cache_response = await r.get(cache_key)
     if cache_response:
         yield cache_response
-    else:
-        # Async retrieval and async streaming, so nothing here blocks the event loop.
+        return
+    request_start = time.perf_counter()   # whole request, used by the stale/degraded log
+
+    # Retrieval uses the same Gemini API, so an outage can take it down too.
+    # Treat that like "all tiers failed" and go to the stale cache.
+    prompt = None
+    try:
         context = await find_relevant_chunks_async(question.content, app.state.collection, K)
         prompt = build_prompt(context, question.content)
-        start = time.perf_counter()
-        first_token_at = None
-        last_chunk = None
-        response = await client.aio.models.generate_content_stream(
-            model=MODEL,
-            config={"system_instruction": SYSTEM_INSTRUCTION},
-            contents=prompt
-        )
-        chunks = []
-        async for chunk in response:
-            last_chunk = chunk
-            if chunk.text:
+    except Exception as e:
+        print(f"[retrieval failed: {type(e).__name__}: {e}]")
+
+    start = time.perf_counter()           # generation only: ttft_s and latency_s measure from here
+    first_token_at = None
+    last_chunk = None
+    served_tier = None
+    served_model = None
+    midstream_failed = False
+    chunks = []
+
+    if prompt is not None:
+        try:
+            async for tier, model, chunk in stream_with_fallback(client, prompt):
+                last_chunk = chunk
+                if not chunk.text:
+                    continue
                 if first_token_at is None:
                     first_token_at = time.perf_counter()
+                    served_tier, served_model = tier, model
+                    if tier > 0:
+                        yield FALLBACK_NOTICE  # shown to the user, never cached
                 yield chunk.text
                 chunks.append(chunk.text)
-        chunks_string = "".join(chunks)
+        except Exception as e:
+            if first_token_at is None:
+                raise  # non-fallback-worthy error before any output: a real bug
+            # Committed to a tier and the stream broke part way: end it, log it, don't cache it.
+            midstream_failed = True
+            print(f"[stream failed mid-response on tier {served_tier}: {type(e).__name__}: {e}]")
 
-        # Structured log of every real LLM call: prompt, response, latency, tokens.
-        # usage_metadata arrives on the final streamed chunk.
+    # Every tier failed (or retrieval did): stale cache, then a fixed degraded message.
+    if first_token_at is None:
+        stale = await r.get(make_stale_key(question.content))
+        answer = (STALE_NOTICE + stale) if stale else DEGRADED_MESSAGE
+        yield answer
         log_llm_call(
-            source="api_output",
-            model=MODEL,
-            question=question.content,
-            prompt=prompt,
-            response=chunks_string,
-            latency_s=time.perf_counter() - start,
-            ttft_s=(first_token_at - start) if first_token_at else None,
-            usage=getattr(last_chunk, "usage_metadata", None),
+            source="api_output", model=None, question=question.content,
+            prompt=prompt, response=answer,
+            latency_s=time.perf_counter() - request_start,
+            tier="stale" if stale else "degraded",
         )
+        return
 
-        # Don't cache an empty response (blocked or failed generation).
-        if chunks_string:
-            task = asyncio.create_task(r.set(cache_key, chunks_string, ex=6000))
-            background_tasks.add(task)
-            task.add_done_callback(background_tasks.discard)
+    chunks_string = "".join(chunks)
+
+    # Structured log of every real LLM call: prompt, response, latency, tokens, tier.
+    # usage_metadata arrives on the final streamed chunk.
+    log_llm_call(
+        source="api_output",
+        model=served_model,
+        question=question.content,
+        prompt=prompt,
+        response=chunks_string,
+        latency_s=time.perf_counter() - start,
+        ttft_s=first_token_at - start,
+        usage=getattr(last_chunk, "usage_metadata", None),
+        tier=served_tier,
+    )
+
+    # Cache only complete, primary-tier answers. A backup-model answer must not be
+    # frozen as if it were the primary's, and partial/empty responses are never cached.
+    if chunks_string and served_tier == 0 and not midstream_failed:
+        _cache_in_background(cache_key, chunks_string, 6000)
+        _cache_in_background(make_stale_key(question.content), chunks_string, STALE_TTL_S)
 
 @app.get("/health")
 async def health():
@@ -231,7 +283,7 @@ async def content_output(question: Question):
         media_type="text/plain"
     )
 
-# Websocket streaming
+# Websocket streaming (no fallback chain yet: chat sessions are a separate problem)
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()

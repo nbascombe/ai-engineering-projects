@@ -3,11 +3,12 @@ Common code for rag_api.py and eval_rag.py.
 
 - MODEL / SYSTEM_INSTRUCTION: one definition. The eval's answer-cache key includes
   both, so a change here invalidates stale cached answers automatically.
+- FALLBACK_CHAIN / TTFT_TIMEOUT_S / STALE_TTL_S: the /output fallback chain config.
 - squash(): the single phrase-matching normaliser (letters and digits only), so
   the eval, --ranks and any other script agree on what "the chunk contains this
   phrase" means.
-- log_llm_call(): one JSON line per LLM call (prompt, response, latency, tokens)
-  appended to rag_chatbot/logs/llm_calls.jsonl.
+- log_llm_call(): one JSON line per LLM call (prompt, response, latency, tokens,
+  serving tier) appended to rag_chatbot/logs/llm_calls.jsonl.
 """
 import os
 import re
@@ -19,6 +20,12 @@ LOG_PATH = os.path.join(BASE_DIR, "logs", "llm_calls.jsonl")
 
 MODEL = "gemini-2.5-flash"
 K = 8
+
+# Tier 0 is the primary model; later tiers are tried in order if it fails before
+# its first token. After the last model comes the stale Redis cache (see rag_api.py).
+FALLBACK_CHAIN = [MODEL, "gemini-3.5-flash-lite"]
+TTFT_TIMEOUT_S = 10      # max wait for the first text chunk before giving up on a tier
+STALE_TTL_S = 86400      # long-lived "last known good" copy of tier-0 answers (24h)
 
 SYSTEM_INSTRUCTION = (
     "You are TennisRulesBot, a helpful tennis rules assistant. Answer questions "
@@ -48,14 +55,19 @@ def usage_dict(usage):
 
 
 def log_llm_call(source, model, question, prompt, response, latency_s,
-                 usage=None, ttft_s=None):
-    """Append one structured record per LLM call. Never raises: logging must not break a request."""
+                 usage=None, ttft_s=None, tier=None):
+    """Append one structured record per request/LLM call. Never raises: logging must not break a request.
+
+    tier: 0, 1, ... for the model tier that served it; "stale" for a stale-cache
+    answer; "degraded" when nothing could answer; None where tiers don't apply.
+    """
     try:
         os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
         record = {
             "ts": datetime.now().isoformat(timespec="seconds"),
             "source": source,
             "model": model,
+            "tier": tier,
             "question": question,
             "prompt": prompt,
             "response": response,

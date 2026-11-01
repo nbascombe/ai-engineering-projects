@@ -142,7 +142,7 @@ cache hit.
 **Update: fully async request path**
 **Problem:** `/output` was declared `async def`, but still called the sync embedding and streaming APIs, so every cache miss blocked the event loop for all other clients - the same stall documented for the WebSocket endpoint.
 **Approach:** Switched `/output` to async embedding (`client.aio`), moved the Chroma query off the event loop with `asyncio.to_thread`, and consumed the stream with `async for` over `client.aio.models.generate_content_stream`. Cache-write tasks are now held in a set until they finish, since asyncio only keeps weak references to tasks, and empty responses are no longer cached.
-**Outcome:** Two simultaneous uncached requests to `/output` (cache keys cleared first) finished in 1.87s and 2.74s, against a ~3s average for a single miss, so they overlap rather than queue. One manual run, no sync-version baseline for comparison. Not yet confirmed that LangSmith's `wrap_gemini` traces the `aio` streaming path.
+**Outcome:** Two simultaneous uncached requests to `/output` (cache keys cleared first) finished in 1.87s and 2.74s, against a ~3s average for a single miss, so they overlap rather than queue. One manual run, no sync-version baseline for comparison. LangSmith's wrap_gemini does trace the aio streaming path, with token counts and cost (confirmed in Project 12).
 
 **Why this matters:**
 Same pipeline as Project 4, now reachable by any client over HTTP. The API retrieves 8 chunks per question (validated in Project 10), while the CLI still uses 3.
@@ -250,6 +250,21 @@ This is the first project in the repo where the model itself decides whether ext
 
 ---
 
+### 12. Fallback Model Chain (`rag_chatbot/fallback.py`, `rag_chatbot/rag_api.py`)
+**Problem:** The API called one model, so a rate limit, server error or hung request from Gemini became a failed request. I had no answer to "what happens if the API is down for 5 minutes?"
+**Approach:** A tiered chain on `/output`: primary model, then a backup model, then a stale 24h Redis copy, then a fixed degraded message. Only errors another model could fix (429, 5xx, timeouts, empty streams) fall through; bugs and auth errors re-raise. Fallback happens only before the first token reaches the client, backup-model answers are never cached, and failures are forced on demand with a `FORCE_FAIL` fault-injection variable.
+**Outcome:** Forced each tier to fail and checked the call log: primary answered normally (`tier 0`), a forced primary failure served a correct answer from the backup (`tier 1`) with a notice, both tiers failing gave a saved answer for a repeat question (`stale`) and a clean degraded message for a new one (`degraded`), and a fake 400 re-raised instead of falling back. Real failures were handled the same way: a genuine `503` from Gemini, a primary timeout, and free-tier 429s (5 requests/minute and 20 requests/day on the primary) were all served by the backup. The backup model (`gemini-3.5-flash-lite`) scored 15/15 on the held-out set with both refusals holding. Retrieval shares the Gemini API, so a full outage still limits what the chain can do. Details in `rag_chatbot/README.md`, section 8.
+
+**Concepts covered:**
+- Retry vs fallback, and which errors justify each
+- Time-to-first-token timeouts for hung calls
+- Why streaming limits fallback to before the first token
+- Cache design for degraded modes (stale copy, not caching backup answers)
+- Fault injection to prove failure paths work
+- Isolating an intermittent failure instead of guessing at it
+
+---
+
 ## Technical Progression
 - `basic_chatbot.py` - stateless, single call, no memory
 - `tennis_analyst_bot.py` - stateful, conversational, structured JSON outputs, validated responses
@@ -260,12 +275,13 @@ This is the first project in the repo where the model itself decides whether ext
 - `rag_chatbot/rag_api.py` `/ws` - same pipeline again, now stateful per connection and fully async (`client.aio`), proving why sync calls inside `async def` WebSocket handlers block every other connected client.
 - `tennis_tool_agent.py` - tool-use / function-calling project, now with three tools (live weather, deterministic set scoring, local document lookup) and a bounded ReAct loop (`for i in range(5)`) that lets the model chain multiple tool calls before answering. Confirmed via a deliberately three-tool question that the model calls tools in parallel where needed and correctly withholds a tool call when it can answer from its own knowledge instead.
 - `rag_chatbot/eval_rag.py` - eval harness for the RAG bot: retrieval and generation scored separately over 15 questions, answer cache and call budget for the free tier, and `--rescore` to re-apply scoring to saved reports. k=3 scored 11/15 on two runs with all failures traced to retrieval; k=8 scored 15/15 on two runs (about 2.4x the total tokens including thinking, ~0.3s more median latency). Validated on a separate 15-question held-out set (k=3: 11/13 retrieval, 13/15 answers; k=8: 13/13, 15/15), after which the API moved to k=8.
+- `rag_chatbot/fallback.py` - tiered generation for `/output`: primary model, backup model, stale cache, degraded message. Falls back only on 429/5xx/timeouts, only before the first token, and only caches primary-tier answers. Each scenario was forced and checked via the `tier` field in the call log, and real failures (a 503, a timeout, per-minute and daily 429s) were served by the backup. Backup model scored 15/15 on the held-out set.
 
 ---
 
 ## Tech Stack
 - Python 3.13
-- Google Gemini 2.5 Flash + Gemini Embedding 001
+- Google Gemini 2.5 Flash (primary), Gemini 3.5 Flash-Lite (fallback) + Gemini Embedding 001
 - google-genai
 - python-dotenv
 - ChromaDB
@@ -328,6 +344,7 @@ FastAPI service (runs on http://localhost:8000):
 ```
 uvicorn fastapi_chatbot:app --reload
 uvicorn rag_chatbot.rag_api:app --reload
+FORCE_FAIL=tier0 uvicorn rag_chatbot.rag_api:app --reload # test the fallback chain (also tier0,tier1 or tier0:400)
 ```
 Test via the built-in docs UI at http://localhost:8000/docs
 

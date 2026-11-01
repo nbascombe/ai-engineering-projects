@@ -5,7 +5,7 @@ Three interfaces over the same RAG pipeline: a stateful CLI tool, a stateless HT
 ```
 PDF → Load → Chunk → Embed → ChromaDB → Query → Retrieve chunks → LLM → Answer
 ```
-The HTTP API additionally checks a Redis cache before running this pipeline - on a cache hit, embedding, retrieval, and generation are skipped entirely. See the Caching section below.
+The HTTP API additionally checks a Redis cache before running this pipeline - on a cache hit, embedding, retrieval, and generation are skipped entirely. See the Caching section below. On a miss, generation goes through a fallback chain (primary model, backup model, stale cache, degraded message); see section 8.
 
 On first run the pipeline builds and persists the ChromaDB collection to disk. Every subsequent run - CLI or API - loads the existing collection, so no re-embedding is needed.
 
@@ -268,7 +268,7 @@ Measured with `time curl`, N=10 per case, wall-clock `real` time:
 
 **Problem:** `/output` was `async def` but its retrieval (sync embed + Chroma query) and generation (sync streaming iterator) still blocked the event loop on every cache miss, stalling all other in-flight requests.
 **Approach:** Retrieval now goes through `find_relevant_chunks_async` (async embed, Chroma query via `asyncio.to_thread`), generation uses `await client.aio.models.generate_content_stream(...)` with `async for`, and cache-write tasks are kept in a `background_tasks` set. Empty responses are not cached. The sync `find_relevant_chunks` remains for the CLI and the eval harness.
-**Outcome:** Two simultaneous cache misses on `/output` finished in 1.87s and 2.74s (cache keys cleared first), so one slow request no longer delays another. Single manual run, no sync baseline. Still to check: that LangSmith's `wrap_gemini` still traces the `aio` streaming call (the `retrieve_chunks` run is preserved by decorating the async function too).
+**Outcome:** Two simultaneous cache misses on `/output` finished in 1.87s and 2.74s (cache keys cleared first), so one slow request no longer delays another. Single manual run, no sync baseline. LangSmith's `wrap_gemini` does trace the `aio` streaming call, with tokens and cost (confirmed in section 8), and the `retrieve_chunks` run is preserved by decorating the async function too.
 
 ### Concepts covered
 
@@ -344,6 +344,7 @@ Scoring was tightened after the second k=3 run (see Limitations). I re-scored al
 | Mean thinking tokens | 299 | 487 | 281 | 266 |
 | Mean total tokens | 1,073 | 2,539 | 1,055 | 2,251 |
 | Mean context chars | 2,592 | 7,322 | 2,622 | 7,107 |
+| Backup model: retrieval 13/13, answers 15/15 | `eval_20261030_181059_heldout_k8_flashlite.json` | `gemini-3.5-flash-lite` as `MODEL`, held-out set, k=8, fresh and uncached. No thinking-token data (the model reported none), so token and latency figures aren't comparable with the primary's report |
 
 Dev question numbers (Q10, Q15) and held-out question numbers (Q14, Q15) refer to different files.
 
@@ -426,7 +427,7 @@ Retrieval-only runs on the first nine questions gave 6/9 at k=3, 7/9 at k=5 and 
 - Dev-set token figures were computed from the call log, splitting k=3 and k=8 records by prompt length, because those reports' summaries predate thinking and total tokens. The held-out reports include them directly.
 - Held-out Q11 is ambiguous (a 120s set break does follow every set), so its k=3 failure is partly a question-design problem. I left it in rather than edit it after seeing the result.
 - The eval harness uses the sync retrieval and generation path, so these numbers predate the async changes to `/output`. They should be unaffected (same chunks, model and prompt), but the API path itself hasn't been re-evaluated.
-- A refusal check on "not in the context" would also accept an echo of the system prompt (the harness now rejects the known echo markers, but not every degenerate output).
+- The refusal check accepts any answer containing a phrase like “not in the context”, which let an echo of the prompt’s second sentence (“If the answer is not in the context, say so.”) score as a valid refusal. Found by testing score_answer directly. That sentence is now in DEGENERATE_MARKERS, but the markers are hand-listed, so they can drift if SYSTEM_INSTRUCTION changes, and other degenerate outputs would still slip through.
 
 ### What I'd improve
 
@@ -448,7 +449,7 @@ Retrieval-only runs on the first nine questions gave 6/9 at k=3, 7/9 at k=5 and 
 ## 7. Structured logging - `rag_common.log_llm_call`
 
 **Problem:** LangSmith's free tier caps traces and expires them after 14 days, so there was no durable record of each call's prompt, response, latency or token cost.
-**Approach:** A single `log_llm_call()` in `rag_common.py` appends one JSON line per real LLM call to `logs/llm_calls.jsonl`: timestamp, source (`api_output`, `api_ws` or `eval`), model, question, prompt, response, latency, time to first token, and prompt/output/total/thinking tokens. For streamed calls, usage metadata is taken from the final chunk. It never raises, so logging cannot fail a request.
+**Approach:** A single `log_llm_call()` in `rag_common.py` appends one JSON line per real LLM call to `logs/llm_calls.jsonl`: timestamp, source (`api_output`, `api_ws` or `eval`), model, question, prompt, response, latency, time to first token, and prompt/output/total/thinking tokens. For streamed calls, usage metadata is taken from the final chunk. It never raises, so logging cannot fail a request. Stale-cache and degraded responses (section 8) are logged too, with `model: null`, since no model call was made. Each record also carries a `tier` field (`0`, `1`, `"stale"` or `"degraded"`) saying which fallback tier served the request (see section 8).
 **Outcome:** Every `/output` miss, every `/ws` message and every eval generation is logged. Cache hits make no LLM call, so they are not. The log gave a measured cost comparison of k=3 vs k=8 (median 2.07s vs 2.36s, mean prompt tokens 735 vs 1,985), and the eval summary now reports thinking and total tokens too. `logs/` is git-ignored apart from a trimmed `sample_llm_calls.jsonl`.
 
 ### Technical decisions
@@ -461,6 +462,86 @@ Retrieval-only runs on the first nine questions gave 6/9 at k=3, 7/9 at k=5 and 
 
 - Log cache hits too (with a `cache_hit` flag) so hit rate can be measured.
 - Log rotation and a size cap; the file grows forever.
+
+---
+
+## 8. Reliability - fallback model chain on `/output`
+
+**Problem:** `/output` called a single model, so a 429, a 5xx or a hung request from Gemini became a failed request for the user. I had no answer to "what happens if the API is down for 5 minutes?"
+**Approach:** `/output` now tries a chain of tiers in order: the primary model (`gemini-2.5-flash`), a backup model (`gemini-3.5-flash-lite`, in `FALLBACK_CHAIN` in `rag_common.py`; `gemini-2.5-flash-lite` is no longer available), then a stale Redis copy of a previous answer, then a fixed "service degraded" message. The chain lives in `fallback.py`.
+- `is_fallback_worthy()` decides whether another tier could help: timeouts, empty streams and codes 429/500/502/503/504 fall through. A 400 (my bug) or 401/403 (the same key fails on every tier) re-raises instead of being hidden.
+- A hung call never raises, so each tier has a time-to-first-token timeout (`TTFT_TIMEOUT_S`, 10s) enforced with `asyncio.wait_for`.
+- Fallback is only possible **before the first token reaches the client**. After that the stream is committed to that tier. A mid-stream failure ends the stream, is logged, and is not cached.
+- Only complete tier-0 answers are cached. Each one is written twice: the normal 6000s entry, and a 24h "stale" copy (`rag:stale:<version>:<fingerprint>:<question>`) that is read only when every model tier has failed. A backup-model answer is never cached, so the next request retries the primary.
+- Backup and stale answers are prefixed with a notice so the user knows they are not the primary model's live answer.
+- A retrieval failure (the embedding call uses the same Gemini API) is treated like "all tiers failed" and goes to the stale cache.
+- `log_llm_call` records a `tier` field: `0`, `1`, `"stale"` or `"degraded"`.
+- Failures are forced for testing with `FORCE_FAIL` (e.g. `tier0`, `tier0,tier1`, `tier0:400`), which raises a fake error with a `.code`, so the same `is_fallback_worthy` path runs as for a real API error.
+
+**Outcome:** Each scenario was forced and checked against the call log (one run each):
+| Scenario | Result | Logged |
+|---|---|---|
+| Nothing forced | Normal answer from the primary | `tier: 0`, `gemini-2.5-flash` |
+| `FORCE_FAIL=tier0` | Backup notice, correct answer | `tier: 1`, `gemini-3.5-flash-lite` |
+| `FORCE_FAIL=tier0,tier1`, question asked before | Stale notice, the earlier saved answer | `tier: "stale"`, `model: null` |
+| `FORCE_FAIL=tier0,tier1`, new question | Fixed degraded message, no crash | `tier: "degraded"`, `model: null` |
+| `FORCE_FAIL=tier0:400` | Error re-raised, no fallback to tier 1 | no log line written |
+| `TTFT_TIMEOUT_S = 0.001` | Both tiers timed out, degraded message | `tier: "degraded"` |
+
+For a 5-minute API outage this means: repeat questions from the last 24 hours get a saved answer with a notice, new questions get the degraded message, nothing crashes, and normal service resumes on the next request once the API is back, since nothing from the backup tiers was cached.
+
+**Real failures during testing.** The chain also handled failures I didn't force:
+- The primary returned a genuine `503 UNAVAILABLE` ("high demand") on a normal request, and the backup answered correctly with the notice.
+- In a run of 15 questions sent one every 3 seconds, 5 requests fell back to the backup and all five returned an answer: one primary timeout (no first token in 10s), one per-minute 429 (the free tier allows 5 requests/minute on the primary) and three daily-quota 429s (20 requests/day, with a retry time of about 20 hours). The burst rate was my mistake, but it made a useful test.
+- Separately, tier 1 timed out on two consecutive forced-failover requests, and both returned the degraded message. I could not reproduce the timeouts: a standalone script streamed from `gemini-3.5-flash-lite` in 0.4 to 1.3s with the app's system instruction, a ~7k-character prompt and the LangSmith wrapper, and the same forced-failover setup then worked repeatedly. It is most consistent with a transient demand spike on Google's side, but I did not confirm the cause.
+
+**Latency.** Primary time to first token (generation only, from the call log, measured after the timer was restarted post-retrieval): median 2.7s and max 7.7s over 16 successful calls, so about 1.3x headroom against the 10s timeout. These figures count only calls that produced a first token. One further primary attempt exceeded the 10s timeout and was served by the backup, so they understate the tail. The first request after a server restart was among the slowest (7.7s and 5.6s), which may be cold-start cost, but that is two samples. Tier 1 first-chunk time over 9 failover requests ranged from 0.55s to 8.01s (median 1.0s); the slowest ones came during repeated back-to-back fallbacks, and I don't know why. Both tiers are traced in LangSmith with token counts and cost, so `wrap_gemini` does cover the `aio` streaming path.
+
+**Backup-model quality.** On the 15 held-out questions at k=8, `gemini-3.5-flash-lite` scored retrieval 13/13 and answers 15/15, the same as `gemini-2.5-flash`, with both refusals holding (Q14 named no winner; Q15 gave no technique advice). This met the rule set before the run (at least 13/15 answers and both refusals holding). On Q5 (coaching) it kept all the conditions, and its opening was more hedged than the primary's at k=8. One run on a set already inspected several times, so it shows the backup is acceptable, not that it is equivalent. Latency isn't comparable between the two reports (different days, and the Flash-Lite report has no thinking-token data).
+
+### Technical decisions
+
+**Fall back only on errors a different model could fix.** 429 is per model and 5xx are server-side, so another tier may work. 400 and 401/403 would fail identically on every tier, and falling back would hide a bug or a bad key.
+**Decide the tier before the first token, not after.** Once a token has been sent, switching models would splice two different answers together. So the chain only advances while nothing has been yielded, and anything after that ends the stream.
+**Never cache a backup-model answer.** Caching it would freeze the weaker answer as if it were the primary's for the full TTL. Skipping the cache means the next request tries the primary again.
+**A separate long-lived stale key.** The normal cache is checked first, so by the time every tier has failed there is no entry under that key. The stale copy (24h) is what the last tier reads.
+**Fault injection instead of breaking the real key.** A bad API key fails every tier equally and proves nothing about the chain. `FORCE_FAIL` fails chosen tiers on demand.
+**Per-tier timeout around the first chunk only.** Opening the stream is instant (the request is sent when iteration starts), so `wait_for` on the first text chunk covers the real wait.
+**Keep the 10s timeout.** A spurious fallback is cheap (a correct backup answer plus a notice, and nothing cached), while a longer timeout makes users wait longer when the primary really is hung. The sample is too small to justify changing it.
+
+### Limitations
+
+- Retrieval embeds through the same Gemini API, so an outage that takes down generation will probably take down retrieval too. The fallback tiers only protect generation. The stale cache helps only for questions already asked within 24h.
+- The free tier allows 20 requests/day and 5/minute on the primary, so quota exhaustion is the most likely real-world trigger for the fallback. The chain still calls the primary on every request after a daily-quota 429.
+- Worst case, both tiers hang and the user waits about two timeouts (~20s) before the degraded message. One forced failure plus one timeout was observed at ~11s.
+- The `prompt` in a `stale` or `degraded` log line is the retrieval prompt built before the chain failed. No model call was made for those requests.
+- A non-fallback-worthy error part way through a request (e.g. the fake 400) breaks the stream (`curl: (18)`) instead of returning a clean 500, because the 200 header has already been sent.
+- One run per scenario, so this shows the chain's logic works, not how it behaves under load or concurrent failures. The tier-1 timeouts were not reproduced, so their cause is unconfirmed. After the daily-quota errors, one primary request succeeded, which I can't explain.
+- The latency sample is small (16 successful calls), so the tail is poorly measured.
+- Backup-model quality was measured on the held-out set only. Both question sets have now been inspected, so neither is independent.
+
+### What I'd improve
+
+- A circuit breaker: after N consecutive failures, or a quota 429 that states a retry time, skip the failing tier for that period instead of calling it on every request.
+- Per-tier timeouts (for example a longer one for the primary, whose tail reached 7.7s), plus a total deadline across tiers so two hung tiers don't cost the user ~20s.
+- Track how often unforced requests fall back to the backup, and tune `TTFT_TIMEOUT_S` from that.
+- Add the fallback chain to `/ws`. It uses a persistent chat session, so switching models would mean replaying the history into a new session.
+- Retry the same model once on a transient 5xx or timeout before falling back. 429 should not be retried straight away.
+- Store a timestamp with the stale copy and show its age in the notice.
+- Return a proper HTTP status (e.g. 503) for the degraded case. This needs the decision to be made before the response starts, not while streaming.
+- Log cache hits and stale hits so the rate of degraded service can be measured.
+- Fix `fmt` in `eval_rag.py`, which prints "answers came from the old cache" for any missing value, including thinking tokens that were never reported.
+
+### Concepts covered
+
+- Retry vs fallback, and which error codes justify each
+- Time-to-first-token timeouts, since a hung call never raises
+- Why streaming limits fallback to before the first token
+- Cache design for degraded modes: a separate long-lived copy, and what not to cache
+- Fault injection to test failure paths on demand
+- Isolating an intermittent failure by testing one variable at a time, and reporting it as unreproduced instead of inventing a cause
+- Treating a dependency outage (the embedding call) as part of the reliability design
+- Free-tier quotas as a real failure mode: per-minute vs per-day limits
 
 ---
 
@@ -518,7 +599,7 @@ python -m rag_chatbot.eval_rag --eval-set rag_chatbot/eval_set_heldout.json --re
 ## Files
 
 - `rag_chatbot.py` - CLI pipeline and chat loop, stateful across a terminal session
-- `rag_api.py` - FastAPI service exposing the same retrieval pipeline over HTTP, stateless per request, with cache-aside caching on `/output`
+- `rag_api.py` - FastAPI service exposing the same retrieval pipeline over HTTP, stateless per request, with cache-aside caching and the fallback chain on `/output`
 - `documents/2026-rules-of-tennis-english.pdf` - the ITF Rules of Tennis
 - `chroma_db/` - generated on first run, not committed to git
 - `static/websocket_client.html` - minimal HTML/JS test client for the `/ws` endpoint
@@ -528,3 +609,4 @@ python -m rag_chatbot.eval_rag --eval-set rag_chatbot/eval_set_heldout.json --re
 - `eval_results/` - saved eval reports (the answer cache in here is git-ignored); re-score any of them with `--rescore`
 - `rag_common.py` - code shared by the API and the eval: model, system instruction, retrieval `K`, phrase-matching helper, LLM call logging
 - `logs/` - structured logging of every call (token count, response and latency); only `sample_llm_calls.jsonl` is committed
+- `fallback.py` - tiered streaming with fallback, error classification and FORCE_FAIL fault injection
