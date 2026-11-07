@@ -315,6 +315,16 @@ async def websocket_endpoint(websocket: WebSocket):
                         first_token_at = time.perf_counter()
                     parts.append(chunk.text)
                     await websocket.send_text(chunk.text)
+
+            response_text = "".join(parts)
+            guardrail_ok, guardrail_reason = validate_output(response_text)
+            if not guardrail_ok:
+                print(f"[guardrail failed on /ws: {guardrail_reason}]")
+                # Drop the poisoned history: start a fresh chat for the next message
+                chat = client.aio.chats.create(
+                    model=MODEL,
+                    config={"system_instruction": SYSTEM_INSTRUCTION}
+                )
             log_llm_call(
                 source="api_ws",
                 model=MODEL,
@@ -324,6 +334,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 latency_s=time.perf_counter() - start,
                 ttft_s=(first_token_at - start) if first_token_at else None,
                 usage=getattr(last_chunk, "usage_metadata", None),
+                guardrail=None if guardrail_ok else guardrail_reason
             )
     except WebSocketDisconnect:
         print("Client disconnected")
