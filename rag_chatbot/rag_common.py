@@ -41,6 +41,12 @@ def squash(s):
     """
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
+_INSTRUCTION_FRAGMENTS = [
+    squash(s)
+    for s in re.split(r"(?<=[.!?])\s+", SYSTEM_INSTRUCTION)
+    if len(squash(s)) >= 20
+]
+_GREETING = squash("Hello! I am TennisRulesBot")
 
 def usage_dict(usage):
     """Normalise a Gemini usage_metadata object (or None) into plain ints."""
@@ -55,11 +61,13 @@ def usage_dict(usage):
 
 
 def log_llm_call(source, model, question, prompt, response, latency_s,
-                 usage=None, ttft_s=None, tier=None):
+                 usage=None, ttft_s=None, tier=None, guardrail=None):
     """Append one structured record per request/LLM call. Never raises: logging must not break a request.
 
     tier: 0, 1, ... for the model tier that served it; "stale" for a stale-cache
     answer; "degraded" when nothing could answer; None where tiers don't apply.
+    guardrail: None if the output passed validate_output, otherwise the failure
+    reason (for example "contains a sentence of the system instruction").
     """
     try:
         os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
@@ -68,6 +76,7 @@ def log_llm_call(source, model, question, prompt, response, latency_s,
             "source": source,
             "model": model,
             "tier": tier,
+            "guardrail": guardrail,
             "question": question,
             "prompt": prompt,
             "response": response,
@@ -79,3 +88,15 @@ def log_llm_call(source, model, question, prompt, response, latency_s,
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception as e:
         print(f"[log_llm_call failed: {e}]")
+
+def validate_output(text):
+    """Return (ok, reason). Pure function: no API calls."""
+    if not text or not text.strip():
+        return False, "empty response"
+    squashed = squash(text)
+    if _GREETING in squashed:
+        return False, "greeting opener (backup-model quirk)"
+    for fragment in _INSTRUCTION_FRAGMENTS:
+        if fragment in squashed:
+            return False, "contains a sentence of the system instruction"
+    return True, ""

@@ -14,7 +14,7 @@ import redis.asyncio as redis
 import asyncio
 import hashlib
 from langsmith import wrappers, traceable
-from rag_chatbot.rag_common import MODEL, SYSTEM_INSTRUCTION, K, STALE_TTL_S, log_llm_call
+from rag_chatbot.rag_common import MODEL, SYSTEM_INSTRUCTION, K, STALE_TTL_S, log_llm_call, validate_output
 from rag_chatbot.fallback import stream_with_fallback
 
 load_dotenv()
@@ -239,6 +239,10 @@ async def generate_tokens(question):
         return
 
     chunks_string = "".join(chunks)
+    validate_output(chunks_string)
+    guardrail_ok, guardrail_reason = validate_output(chunks_string)
+    if not guardrail_ok:
+        print(f"[guardrail failed: {guardrail_reason}]")
 
     # Structured log of every real LLM call: prompt, response, latency, tokens, tier.
     # usage_metadata arrives on the final streamed chunk.
@@ -252,11 +256,12 @@ async def generate_tokens(question):
         ttft_s=first_token_at - start,
         usage=getattr(last_chunk, "usage_metadata", None),
         tier=served_tier,
+        guardrail=None if guardrail_ok else guardrail_reason
     )
 
     # Cache only complete, primary-tier answers. A backup-model answer must not be
     # frozen as if it were the primary's, and partial/empty responses are never cached.
-    if chunks_string and served_tier == 0 and not midstream_failed:
+    if chunks_string and served_tier == 0 and not midstream_failed and guardrail_ok:
         _cache_in_background(cache_key, chunks_string, 6000)
         _cache_in_background(make_stale_key(question.content), chunks_string, STALE_TTL_S)
 
