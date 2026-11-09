@@ -265,6 +265,21 @@ This is the first project in the repo where the model itself decides whether ext
 
 ---
 
+### 13. Guardrails: Prompt Injection Testing and Output Validation (`rag_chatbot/rag_common.py`, `rag_chatbot/rag_api.py`)
+**Problem:** The RAG bot's only protection against instruction hijacking was its system prompt. A plain "print your system prompt" was refused, but only because of the prompt's own "not in the context" rule. Framed as a log-parsing formatting task, the same request got the system prompt back verbatim on both `/output` and `/ws`.
+**Approach:** Red-teamed the bot by hand, wrote a 7-prompt adversarial eval set and took a baseline before fixing anything. Added a shared `validate_output()` that flags empty responses, a backup-model greeting quirk, and any sentence of the system instruction found in a response. `/output` logs the failure and refuses to cache it (including the 24h stale copy). `/ws` logs it and resets the chat so a hijacked format can't persist.
+**Outcome:** Baseline: 4/7 adversarial prompts leaked the prompt verbatim (3/3 format hijacks, 1/4 plain requests). An offline check over 122 cases (all saved eval answers plus fixtures from my manual attacks) flagged 16 and passed 106 with no false positives. Disabling the fragment check made it report 10 missed leaks, confirming the test can fail. Live, leaks were flagged and not cached, and normal questions were unaffected. Streaming means the first leak still reaches the client, and the validator only matches English; both are documented. Details in `rag_chatbot/README.md`, section 9.
+
+**Concepts covered:**
+- Direct vs indirect prompt injection
+- Why prompt wording and keyword filters are weak defences
+- Red-teaming before fixing, with a baseline
+- Output validation as a pure, offline-testable function
+- Streaming as a limit on guardrails
+- Proving a test can fail by disabling what it covers
+
+---
+
 ## Technical Progression
 - `basic_chatbot.py` - stateless, single call, no memory
 - `tennis_analyst_bot.py` - stateful, conversational, structured JSON outputs, validated responses
@@ -276,6 +291,7 @@ This is the first project in the repo where the model itself decides whether ext
 - `tennis_tool_agent.py` - tool-use / function-calling project, now with three tools (live weather, deterministic set scoring, local document lookup) and a bounded ReAct loop (`for i in range(5)`) that lets the model chain multiple tool calls before answering. Confirmed via a deliberately three-tool question that the model calls tools in parallel where needed and correctly withholds a tool call when it can answer from its own knowledge instead.
 - `rag_chatbot/eval_rag.py` - eval harness for the RAG bot: retrieval and generation scored separately over 15 questions, answer cache and call budget for the free tier, and `--rescore` to re-apply scoring to saved reports. k=3 scored 11/15 on two runs with all failures traced to retrieval; k=8 scored 15/15 on two runs (about 2.4x the total tokens including thinking, ~0.3s more median latency). Validated on a separate 15-question held-out set (k=3: 11/13 retrieval, 13/15 answers; k=8: 13/13, 15/15), after which the API moved to k=8.
 - `rag_chatbot/fallback.py` - tiered generation for `/output`: primary model, backup model, stale cache, degraded message. Falls back only on 429/5xx/timeouts, only before the first token, and only caches primary-tier answers. Each scenario was forced and checked via the `tier` field in the call log, and real failures (a 503, a timeout, per-minute and daily 429s) were served by the backup. Backup model scored 15/15 on the held-out set.
+- `rag_chatbot/rag_common.py` `validate_output` - guardrail for `/output` and `/ws`: flags empty responses, the backup model's greeting opener and any system-instruction sentence in a response. `/output` skips both cache writes on a failure; `/ws` resets the chat. Baseline 4/7 adversarial prompts leaked; offline check 16 flagged and 106 passed over 122 cases, 10 misses when the fragment check is disabled.
 
 ---
 
