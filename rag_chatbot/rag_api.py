@@ -239,7 +239,6 @@ async def generate_tokens(question):
         return
 
     chunks_string = "".join(chunks)
-    validate_output(chunks_string)
     guardrail_ok, guardrail_reason = validate_output(chunks_string)
     if not guardrail_ok:
         print(f"[guardrail failed: {guardrail_reason}]")

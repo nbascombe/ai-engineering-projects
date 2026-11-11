@@ -195,6 +195,14 @@ This is the first project in the repo where the model itself decides whether ext
 **Approach:** The max-iterations message is now decided after the loop by checking whether the last response still contains function calls. Handler calls are wrapped so any exception comes back to the model as a structured `tool_execution_failed` result. Negative inputs return `Invalid`.
 **Outcome:** A final answer on round 5 is reported as a success, and a malformed tool call degrades into something the model can read and recover from instead of a traceback.
 
+**RAG vs tool use**
+
+Both give the model information it wasn't trained on, but they differ in who decides what to fetch, and when. In RAG (Projects 4 and 6), my code always retrieves: every question is embedded, the top chunks are pulled from ChromaDB and pasted into the prompt, and the model answers from them. The model has no say in it. In tool use (this project), the model decides. It sees a list of function descriptions, chooses whether to call one, and picks the arguments. My code runs the function and returns the result, and the model decides whether it needs another call or can answer. In short: RAG is retrieval I always do, tool use is retrieval the model asks for.
+
+I'd choose RAG for a large, mostly static body of text that most questions need (the 86-chunk rules PDF), where the cost of always retrieving is small. I'd choose tools for live data (weather), exact computation that shouldn't be left to the model (`resolve_set_score`), or actions with side effects. The cases overlap, since `get_document_lookup` is retrieval exposed as a tool. The model correctly skipped it for the Federer question because that player wasn't in the stored documents, which RAG can't do, since it always retrieves.
+
+The failure modes differ too. RAG fails silently when the right chunk isn't retrieved: at k=3 the answer chunk ranked 5th to 8th for four of my eval questions, and the model gave a refusal or a confident wrong answer. Tool use fails in the loop: a wrong tool, bad arguments, an error mid-chain, or endless calling. I handle those with structured error results the model can read, and a `MAX_TOOL_ROUNDS` cap of 5. The trade-off is control versus cost: RAG is predictable and always pays for retrieval, tool use is flexible but costs extra model round trips and depends on the model making good decisions.
+
 **Concepts covered:**
 - Manual function calling / tool use with the Gemini SDK
 - Testing tool-selection behaviour deliberately - confirming the model calls a tool when relevant, doesn't when it isn't, and can answer from its own knowledge when no tool applies
@@ -205,6 +213,7 @@ This is the first project in the repo where the model itself decides whether ext
 - Translating a written rule into boundary conditions on the inputs, rather than a lookup table of specific cases seen during testing
 - The ReAct pattern implemented as a bounded loop (`for i in range(5)`), not just described conceptually
 - Diagnosing a multi-hop tool-calling limitation by inspecting a response's `function_calls` rather than assuming the model chose wrong
+- When to use RAG vs tool use: who decides to retrieve, which failure modes each has, and how they overlap
 
 ---
 

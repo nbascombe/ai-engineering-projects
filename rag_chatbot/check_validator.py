@@ -9,8 +9,7 @@ import glob
 import json
 import os
 import sys
-
-from rag_common import validate_output
+from rag_chatbot.rag_common import validate_output
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RESULTS_GLOB = os.path.join(BASE_DIR, "eval_results", "eval_*.json")
