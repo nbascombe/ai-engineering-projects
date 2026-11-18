@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import time
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Response
 from pydantic import BaseModel, Field, field_validator
 from contextlib import asynccontextmanager
 from fastapi.responses import StreamingResponse
@@ -16,6 +16,10 @@ import hashlib
 from langsmith import wrappers, traceable
 from rag_chatbot.rag_common import MODEL, SYSTEM_INSTRUCTION, K, STALE_TTL_S, log_llm_call, validate_output
 from rag_chatbot.fallback import stream_with_fallback
+from redis import Redis as SyncRedis
+from rq import Queue, Retry
+from rq.job import Job
+from rq.exceptions import NoSuchJobError
 
 load_dotenv()
 
@@ -24,6 +28,13 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 client = wrappers.wrap_gemini(genai.Client(api_key=os.getenv("GOOGLE_API_KEY")))
 
 r = redis.Redis(decode_responses=True)
+
+# RQ needs a sync connection WITHOUT decode_responses (it stores binary job data).
+rq_conn = SyncRedis()
+task_queue = Queue("llm", connection=rq_conn)
+MAX_QUEUE_DEPTH = 50
+# String path: the API never imports the worker module (which imports this file).
+JOB_FUNC = "rag_chatbot.worker_tasks.answer_question"
 
 # Cache keys are namespaced and versioned: rag:<CACHE_VERSION>:<fingerprint>:<question>.
 # The fingerprint changes automatically when MODEL or SYSTEM_INSTRUCTION change, so stale
@@ -339,3 +350,46 @@ async def websocket_endpoint(websocket: WebSocket):
         print("Client disconnected")
     except Exception as e:
         print(f"WebSocket error: {e}")
+
+# Queued path: non-streaming, rate-limited, retryable. RQ's client is sync, so
+# every call goes through asyncio.to_thread to keep the event loop free.
+@app.post("/jobs", status_code=202)
+async def create_job(question: Question, response: Response):
+    cached = await r.get(make_cache_key(question.content))
+    if cached:                               # cache hits never touch the queue
+        response.status_code = 200
+        return {"job_id": None, "status": "finished",
+                "result": {"answer": cached, "tier": 0, "cached": True}}
+
+    depth = await asyncio.to_thread(len, task_queue)
+    if depth >= MAX_QUEUE_DEPTH:             # backpressure: refuse instead of backing up
+        raise HTTPException(status_code=503, detail="Queue is full, try again shortly.",
+                            headers={"Retry-After": "30"})
+
+    job = await asyncio.to_thread(
+        task_queue.enqueue, JOB_FUNC, question.content,
+        job_timeout=300,        # max run time, including waiting for a rate-limit slot
+        result_ttl=3600,        # keep answers for polling clients (default is 500s)
+        failure_ttl=86400,
+        retry=Retry(max=2, interval=[15, 45]),   # retried only if the job raises
+    )
+    return {"job_id": job.id, "status": "queued"}
+
+
+@app.get("/jobs/{job_id}")
+async def get_job(job_id: str):
+    try:
+        job = await asyncio.to_thread(Job.fetch, job_id, connection=rq_conn)
+    except NoSuchJobError:
+        raise HTTPException(status_code=404, detail="Job not found (unknown ID, or its result expired).")
+    status = await asyncio.to_thread(job.get_status)
+    status = getattr(status, "value", status)
+    body = {"job_id": job.id, "status": status}
+    if status == "finished":
+        body["result"] = job.result
+    elif status == "failed":
+        print(f"[job {job.id} failed]\n{job.exc_info}")      # detail stays server-side
+        body["error"] = "The answer could not be generated. Please try again later."
+    elif status == "queued":
+        body["position"] = await asyncio.to_thread(job.get_position)
+    return body

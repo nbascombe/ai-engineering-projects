@@ -10,3 +10,4 @@ rag_chatbot/eval_results/answer_cache.json
 rag_chatbot/logs/*
 !rag_chatbot/logs/sample_llm_calls.jsonl
 HTTPErrors.md
+scratch/

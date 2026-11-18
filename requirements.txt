@@ -13,3 +13,4 @@ python-dotenv==1.2.2
 redis==8.1.0
 requests==2.32.5                # tennis_tool_agent.py
 uvicorn[standard]==0.44.0       # [standard] brings websockets, needed for /ws
+rq==3.0.0                       # task queue for /jobs
