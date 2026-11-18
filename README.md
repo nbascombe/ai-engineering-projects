@@ -289,6 +289,20 @@ The failure modes differ too. RAG fails silently when the right chunk isn't retr
 
 ---
 
+### 14. Task Queue for LLM Calls (`rag_chatbot/worker_tasks.py`, `rag_chatbot/rag_api.py`)
+**Problem:** LLM calls ran inside the request handler, so a burst of requests all hit a rate-limited API (5/min, about 20/day on the free tier) at once, with nothing to absorb or space them out. More workers can't fix that: workers cap how many calls run at once, not how often they start.
+**Approach:** Learned RQ first in a scratch project (enqueue, drain, failure isolation, scaling workers, warm vs hard shutdown), then added `POST /jobs` and `GET /jobs/{id}` to the RAG API. Jobs go to an RQ queue in Redis. A worker runs retrieval behind a shared Redis rate limiter, then the same primary/backup model chain and output guardrail as `/output`. The API returns a job ID immediately, refuses work with a `503` when the queue is too deep, and serves cached answers without queueing. `/output` keeps streaming; `/jobs` is the non-streaming, rate-limited path.
+**Outcome:** Enqueueing takes 0.03 to 0.05s against about 7 to 8s for the full answer, and a cached repeat returns in 0.011s. With the worker stopped, the API stayed healthy and the jobs waited in Redis. With the limiter set to 2/min, three jobs finished at 11.7s, 13.7s and 37.0s, the last waiting for the next minute window. A failing job retried at 15s and 45s before ending `failed`. On macOS the default forking worker crashed on every job; `rq.SimpleWorker` fixed it. The backup tier answered a forced primary failure without caching it, the stale tier served a saved answer in 5.1s with no model call, and a system-prompt-leak attack via `/jobs` was caught by the output guardrail so the client only received a safe message and nothing was cached. `/output` still works unchanged. The first job after a worker start carries about 5s of overhead, measured across three restarts.
+
+**Concepts covered:**
+- Task queues: producer, queue, worker, job lifecycle, failure isolation
+- Workers cap concurrency, not rate, so an explicit shared limiter is needed
+- Backpressure and result TTLs; retries only help when configured
+- Polling API design vs streaming, and the tradeoff between them
+- Debugging a platform-specific worker crash
+
+---
+
 ## Technical Progression
 - `basic_chatbot.py` - stateless, single call, no memory
 - `tennis_analyst_bot.py` - stateful, conversational, structured JSON outputs, validated responses
@@ -301,6 +315,7 @@ The failure modes differ too. RAG fails silently when the right chunk isn't retr
 - `rag_chatbot/eval_rag.py` - eval harness for the RAG bot: retrieval and generation scored separately over 15 questions, answer cache and call budget for the free tier, and `--rescore` to re-apply scoring to saved reports. k=3 scored 11/15 on two runs with all failures traced to retrieval; k=8 scored 15/15 on two runs (about 2.4x the total tokens including thinking, ~0.3s more median latency). Validated on a separate 15-question held-out set (k=3: 11/13 retrieval, 13/15 answers; k=8: 13/13, 15/15), after which the API moved to k=8.
 - `rag_chatbot/fallback.py` - tiered generation for `/output`: primary model, backup model, stale cache, degraded message. Falls back only on 429/5xx/timeouts, only before the first token, and only caches primary-tier answers. Each scenario was forced and checked via the `tier` field in the call log, and real failures (a 503, a timeout, per-minute and daily 429s) were served by the backup. Backup model scored 15/15 on the held-out set.
 - `rag_chatbot/rag_common.py` `validate_output` - guardrail for `/output` and `/ws`: flags empty responses, the backup model's greeting opener and any system-instruction sentence in a response. `/output` skips both cache writes on a failure; `/ws` resets the chat. Baseline 4/7 adversarial prompts leaked; offline check 16 flagged and 106 passed over 122 cases, 10 misses when the fragment check is disabled.
+- `rag_chatbot/worker_tasks.py` + `/jobs` endpoints - queued, non-streaming LLM calls via RQ: enqueue in ~0.03s, shared Redis rate limiter, backpressure (503), retries at 15s/45s, cache bypass for repeat questions. With the limiter at 2/min, three queued jobs finished at 11.7s, 13.7s and 37.0s. Run with `rq.SimpleWorker` on macOS.
 
 ---
 
@@ -316,6 +331,7 @@ The failure modes differ too. RAG fails silently when the right chunk isn't retr
 - Redis
 - Open-Meteo API (weather + geocoding, no key required)
 - LangSmith (tracing)
+- RQ (task queue)
 
 ---
 
@@ -370,6 +386,7 @@ FastAPI service (runs on http://localhost:8000):
 uvicorn fastapi_chatbot:app --reload
 uvicorn rag_chatbot.rag_api:app --reload
 FORCE_FAIL=tier0 uvicorn rag_chatbot.rag_api:app --reload # test the fallback chain (also tier0,tier1 or tier0:400)
+rq worker llm --with-scheduler --worker-class rq.SimpleWorker
 ```
 Test via the built-in docs UI at http://localhost:8000/docs
 

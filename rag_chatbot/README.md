@@ -1,6 +1,6 @@
 # TennisRulesBot
 
-Three interfaces over the same RAG pipeline: a stateful CLI tool, a stateless HTTP API (now with Redis cache-aside caching on repeat questions), and a stateful WebSocket endpoint. All answer questions grounded in the official 2026 ITF Rules of Tennis PDF, and correctly refuse to answer outside that scope rather than hallucinating.
+Four interfaces over the same RAG pipeline: a stateful CLI tool, a stateless HTTP API (now with Redis cache-aside caching on repeat questions), a stateful WebSocket endpoint and a queued `/jobs` path. All answer questions grounded in the official 2026 ITF Rules of Tennis PDF, and correctly refuse to answer outside that scope rather than hallucinating.
 
 ```
 PDF → Load → Chunk → Embed → ChromaDB → Query → Retrieve chunks → LLM → Answer
@@ -606,6 +606,95 @@ The saved report is `eval_20261106_172212_adversarial_baseline.json`. The first 
 
 ---
 
+## 10. Task queue - queued LLM calls with RQ (`POST /jobs`, `GET /jobs/{id}`)
+
+**Problem:** Every LLM call ran inside the request handler, so a burst of requests all hit Gemini at once. The free tier allows 5 requests per minute and about 20 per day, and nothing absorbed or spaced out the load. A worker count only caps how many calls run at once, not how often they start: at 3 seconds per job, one worker already makes about 20 calls per minute, 4x the limit.
+**Approach:** Added a second path next to the streaming `/output`. `POST /jobs` checks the cache, then enqueues the question to an RQ queue (`llm`) backed by Redis and returns a job ID. A separate worker (`worker_tasks.py`) runs retrieval, waits for a slot in a shared Redis rate limiter, calls the model chain (primary, then backup), validates the output and caches primary-tier answers. `GET /jobs/{id}` returns the status and, when finished, the answer. `/output` and `/ws` are unchanged, because streaming tokens through a separate worker process isn't possible without extra plumbing. The two paths trade off: `/output` streams and is low-latency, `/jobs` is non-streaming but rate-limited, retryable and able to absorb bursts.
+**Outcome:** Enqueueing returns in 0.03 to 0.05s regardless of how long the answer takes (about 7 to 8s end to end). A repeat of a cached question returns `200` in 0.011s without touching the queue. With the worker stopped, `/health` still responds and jobs wait in Redis until a worker starts. With the queue capped at 2, the third job got a `503`. With the limiter set to 2 requests per minute, three queued jobs finished at 11.7s, 13.7s and 37.0s: the third waited for the next minute window instead of calling Gemini. A job that fails is retried twice (15s then 45s apart) before ending `failed`.
+
+```
+client ──POST /jobs──► FastAPI ──cache hit?──► 200 + answer
+                          │ miss
+                          ▼
+                   503 if queue depth >= MAX_QUEUE_DEPTH
+                          │
+                          ▼
+                   RQ queue "llm" (Redis)
+                          │
+                          ▼
+   worker: cache check → retrieve → rate-limit slot → model chain → guardrail → cache write
+client ──GET /jobs/{id}──► queued / started / scheduled / finished / failed
+```
+
+### Results
+
+Measured on one machine, one worker, one run per test:
+
+| Test | Result |
+|---|---|
+| Enqueue latency (miss) | `202` in 0.027s, 0.030s and 0.046s across runs; the job took about 7 to 8s from enqueue to `finished` |
+| Cache hit | `POST 200` in 0.011s, `cached: true`, no job created |
+| Worker stopped | `/health` answered normally; the job stayed `queued` for about 29s until a worker started, then finished in 7.2s |
+| Backpressure (`MAX_QUEUE_DEPTH = 2`, worker stopped) | `202`, `202`, `503`, all within 0.0s; the two accepted jobs stayed `queued` |
+| Burst of 3 jobs (`GEMINI_RPM=2`) | all 3 enqueued in 0.1s; finished at 11.7s, 13.7s and 37.0s |
+| Offline limiter check (limit 3, window 10s) | 3 calls at 0.0s, 3 more at 5.0s (the window is clock-aligned, so it rolled over early) |
+| Retry on failure (`FORCE_FAIL=tier0,tier1`) | status `started → scheduled → … → failed`, with the final failure at about 67s: first attempt, then retries 15s and 45s later; the client got a generic error, the traceback stayed in the worker log |
+| Backup tier (`FORCE_FAIL=tier0`) | `tier: 1`, `gemini-3.5-flash-lite`, backup notice shown; no `rag:v2:*` key was created, so the next request tries the primary again; job took 8.5s |
+| Stale tier (normal key deleted, `FORCE_FAIL=tier0,tier1`) | job finished with `tier: "stale"`, the saved answer and the stale notice, in 5.1s with no generation call |
+| Guardrail (`attack_output.py` prompt via `/jobs`) | the model leaked the system prompt; the worker flagged it, the client received "Sorry, I can't help with that request." with job status `finished`; no cache key written; generation was 3.4s of the 8.8s job |
+| `/output` regression | correct answer, logged `tier 0`, `guardrail null`, `ttft_s` 1.143s, cache key written. The answer was a single short sentence, so this shows the path works, not visible streaming |
+
+The job in the burst test that finished at 37.0s sat in `started` for about 23s, doing nothing but waiting for a limiter slot. A single worker plus a limiter works, but the worker is idle while it waits. The first job after a worker starts was also much slower (11.7s vs about 2s for the next one) abd also carries about 5s of overhead: jobs that made no generation call took 5.1s (stale tier) and about 6s (first retry attempt), and the guardrail job took 8.8s of which only 3.4s was generation (`latency_s`). I have not isolated the cause (importing `rag_api`, loading the Chroma collection or the first embedding call are the candidates).
+
+### Technical decisions
+
+**A new path, not a rewrite of `/output`.** Streaming and queueing conflict: the client's HTTP connection lives in the API process, but the tokens are produced in the worker process. Rather than add pub/sub plumbing, `/output` keeps streaming and `/jobs` is the non-streaming, rate-limited path.
+**Workers cap concurrency, not rate, so the limit is explicit.** `wait_for_slot()` uses a Redis counter per model per 60s window (`ratelimit:<model>:<window>`), shared across all workers. It waits up to 90s, longer than one window, so a job waits for the next window instead of degrading to the backup model straight away. If no slot appears in time it raises a fallback-worthy `TimeoutError`.
+**Backpressure at the API.** If the queue holds `MAX_QUEUE_DEPTH` (50) jobs, `POST /jobs` returns `503` with `Retry-After`, instead of accepting work that will never finish in a reasonable time.
+**Cache check twice.** Once in the API (a hit never touches the queue) and again in the worker, because an identical job queued earlier may have finished while this one waited.
+**Same reliability rules as `/output`.** Only primary-tier answers are cached, backup answers carry a notice and are never cached, and a stale copy is used only when every tier fails. `FORCE_FAIL` works in the worker for testing.
+**Validate before the client sees it.** Because the answer isn't streamed, `validate_output()` runs on the complete answer before it is returned, and a failing answer is replaced with a safe message. This closes the "first leak still reaches the client" limitation from section 9, for this path only. (Test 10 will confirm it.)
+**Job settings that come from Monday's experiments.** `result_ttl=3600`, because RQ keeps successful results for only 500s by default and a polling client would find them gone. `failure_ttl=86400`. `Retry(max=2, interval=[15, 45])`, because RQ does not re-run a job whose worker died, and only retries when configured to. `job_timeout=300` covers the run time including time spent waiting for a limiter slot.
+**The RQ connection is separate.** RQ stores binary job data, so its Redis connection must not use `decode_responses=True`. The API keeps its async text connection for the cache, and RQ gets its own sync connection. RQ's client is sync, so every call from the async API goes through `asyncio.to_thread`.
+**The worker is run with `rq.SimpleWorker` on macOS.** The default worker forks a child per job, and on macOS the child crashed with an Objective-C fork error shortly after starting each job (`Work-horse terminated unexpectedly`). The first retries ran into the same crash, which at least showed the retry schedule working. `--worker-class rq.SimpleWorker` runs jobs in-process and fixed it.
+**Guardrail reason is logged but not returned to the client, so it doesn’t reveal which check fired.**
+
+### Limitations
+
+- **No streaming on `/jobs`.** The client polls (every 1s in `poll_client.py`) and the answer arrives all at once.
+- **Workers sit idle while waiting for a limiter slot.** One slow wait blocks that worker's other jobs.
+- **The limiter is a fixed window.** A burst can straddle two windows and briefly allow up to 2x the limit. A slot is also spent even if the Gemini call then fails.
+- **Retry helps transient errors only.** It does nothing against a daily-quota 429 (retry time about 20 hours), and each retry redoes retrieval, which makes another embedding call (3 embedding calls in the retry test).
+- **`SimpleWorker` has no crash isolation or hard timeouts.** A job that crashes hard takes the worker down with it. It's a local development choice for macOS, not a production one.
+- **A hard-killed worker leaves a job in limbo** until RQ's cleanup moves it to `failed`. It was not re-run (Monday experiment).
+- **Single worker, one run per test, one machine.** Nothing here shows behavior under concurrent load or multiple workers.
+- **`/ws` is not queued** and `/jobs` has no auth or per-client rate limit.
+- A stale answer or a guardrail rejection still returns job status `finished`, so clients must read `tier` (`"stale"`) and the answer text; status alone doesn't say the answer was degraded.
+- The backup model's answer to "net height at the centre" said the context doesn't mention it, though the rules state a net height. I did not check whether this was a retrieval miss or a model miss, and it isn't a queue problem.
+- The `/output` regression check used a one-sentence answer, so it doesn't visibly show streaming.
+
+### What I'd improve
+
+- Load test with a `FAKE_LLM` switch in the worker (sleep about 3s instead of calling Gemini), since the free tier can't take 100 real generations. Then compare latency and error rate with and without the queue, and with 1 vs several workers.
+- A sliding-window or token-bucket limiter, and a limiter that treats a daily-quota 429 differently (skip the retries and fail fast).
+- Retry only the generation step, or cache the retrieved context, so retries don't re-embed.
+- Notify the client (webhook or SSE) instead of polling, or have the worker publish tokens to a Redis stream so a queued job can still stream.
+- Worker pools and queue-depth sizing (Friday's topic), and running the default forking worker on Linux/Docker.
+- Warm the Chroma collection and imports at worker start (about 5s first-job overhead)
+
+### Concepts covered
+
+- Producer, queue and worker, and why the API never runs the slow work itself
+- Job lifecycle (`queued`, `started`, `scheduled`, `finished`, `failed`) and failure isolation
+- Workers cap concurrency, not rate: an explicit shared limiter is needed for a rate-limited API
+- Backpressure: refusing work at the edge instead of letting a queue grow
+- Result TTLs, retries, and what a queue does not do for you (no automatic retry of a crashed job)
+- Polling API design (`202` plus a job ID) vs streaming
+- Why RQ's Redis connection differs from the app's, and bridging a sync client from async code
+- Warm vs cold shutdown, and diagnosing a platform-specific crash (macOS fork)
+
+---
+
 ## Prerequisites
 
 - A Google Gemini API key - get one at aistudio.google.com
@@ -659,6 +748,15 @@ python -m rag_chatbot.eval_rag --eval-set rag_chatbot/eval_set_heldout.json --ru
 python -m rag_chatbot.eval_rag --eval-set rag_chatbot/eval_set_heldout.json --runs 1 --k 8 --no-cache --label heldout_k8
 python -m rag_chatbot.eval_rag --eval-set rag_chatbot/eval_set_heldout.json --rescore rag_chatbot/eval_results/<report>.json
 ```
+Queued path (three terminals, from the repo root):
+```
+uvicorn rag_chatbot.rag_api:app --reload
+rq worker llm --with-scheduler --worker-class rq.SimpleWorker   # SimpleWorker avoids the macOS fork crash
+python poll_client.py "who serves first?"
+python post_many.py                                             # burst of 3 questions
+python check_rate_limiter.py                                    # offline limiter check, no API calls
+```
+`FORCE_FAIL` and `GEMINI_RPM` go on the worker command, not on uvicorn.
 
 ## Files
 
@@ -676,3 +774,4 @@ python -m rag_chatbot.eval_rag --eval-set rag_chatbot/eval_set_heldout.json --re
 - `fallback.py` - tiered streaming with fallback, error classification and FORCE_FAIL fault injection
 - `eval_set_adversarial.json` - 7 system-prompt-leak prompts, used with `--eval-set`
 - `check_validator.py` - offline test of `validate_output` over every saved eval answer plus inline fixtures; makes no API calls
+- `worker_tasks.py` - the RQ job: cache check, retrieval, shared rate limiter, model fallback, guardrail, cache write
