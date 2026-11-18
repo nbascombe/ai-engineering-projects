@@ -582,7 +582,7 @@ The saved report is `eval_20261106_172212_adversarial_baseline.json`. The first 
 - The validator matches English sentences from the instruction. A paraphrase, a translation or an encoding would get past it. The translation prompt passed only because the model didn't translate.
 - 7 prompts, one run each, written after I had seen the leak. Q1 and Q5 passed once, which doesn't show they are safe, since a rephrase that sounds like a question about the conversation (Q6) got through.
 - There is no input-side check, and off-topic refusal still relies on the system prompt alone.
-- Offline fixtures for the Friday `/output` and `/ws` leaks were rebuilt from pasted responses, not from saved reports.
+- Offline fixtures for the first manual `/output` and `/ws` leaks were rebuilt from pasted responses, not from saved reports.
 - The CLI (`rag_chatbot.py`) is unguarded.
 - The `/ws` chat history re-sends each turn's retrieved context, so the prompt grows by about 2,000 tokens per turn (4,919 tokens on a third question). This is a cost issue seen while testing, not a security one.
 
@@ -644,7 +644,7 @@ Measured on one machine, one worker, one run per test:
 | Guardrail (`attack_output.py` prompt via `/jobs`) | the model leaked the system prompt; the worker flagged it, the client received "Sorry, I can't help with that request." with job status `finished`; no cache key written; generation was 3.4s of the 8.8s job |
 | `/output` regression | correct answer, logged `tier 0`, `guardrail null`, `ttft_s` 1.143s, cache key written. The answer was a single short sentence, so this shows the path works, not visible streaming |
 
-The job in the burst test that finished at 37.0s sat in `started` for about 23s, doing nothing but waiting for a limiter slot. A single worker plus a limiter works, but the worker is idle while it waits. The first job after a worker starts was also much slower (11.7s vs about 2s for the next one) abd also carries about 5s of overhead: jobs that made no generation call took 5.1s (stale tier) and about 6s (first retry attempt), and the guardrail job took 8.8s of which only 3.4s was generation (`latency_s`). I have not isolated the cause (importing `rag_api`, loading the Chroma collection or the first embedding call are the candidates).
+The job in the burst test that finished at 37.0s sat in `started` for about 23s, doing nothing but waiting for a limiter slot. A single worker plus a limiter works, but the worker is idle while it waits. The first job after a worker starts was also much slower (11.7s vs about 2s for the next one) and also carries about 5s of overhead: jobs that made no generation call took 5.1s (stale tier) and about 6s (first retry attempt), and the guardrail job took 8.8s of which only 3.4s was generation (`latency_s`). I have not isolated the cause (importing `rag_api`, loading the Chroma collection or the first embedding call are the candidates).
 
 ### Technical decisions
 
@@ -653,8 +653,8 @@ The job in the burst test that finished at 37.0s sat in `started` for about 23s,
 **Backpressure at the API.** If the queue holds `MAX_QUEUE_DEPTH` (50) jobs, `POST /jobs` returns `503` with `Retry-After`, instead of accepting work that will never finish in a reasonable time.
 **Cache check twice.** Once in the API (a hit never touches the queue) and again in the worker, because an identical job queued earlier may have finished while this one waited.
 **Same reliability rules as `/output`.** Only primary-tier answers are cached, backup answers carry a notice and are never cached, and a stale copy is used only when every tier fails. `FORCE_FAIL` works in the worker for testing.
-**Validate before the client sees it.** Because the answer isn't streamed, `validate_output()` runs on the complete answer before it is returned, and a failing answer is replaced with a safe message. This closes the "first leak still reaches the client" limitation from section 9, for this path only. (Test 10 will confirm it.)
-**Job settings that come from Monday's experiments.** `result_ttl=3600`, because RQ keeps successful results for only 500s by default and a polling client would find them gone. `failure_ttl=86400`. `Retry(max=2, interval=[15, 45])`, because RQ does not re-run a job whose worker died, and only retries when configured to. `job_timeout=300` covers the run time including time spent waiting for a limiter slot.
+**Validate before the client sees it.** Because the answer isn't streamed, `validate_output()` runs on the complete answer before it is returned, and a failing answer is replaced with a safe message. This closes the "first leak still reaches the client" limitation from section 9, for this path only. Confirmed in the results table: the `attack_jobs.py` prompt was flagged by the worker and the client received only the safe message.
+**Job settings that come from my RQ learning experiments (see `docs/rq-learning-notes.md`).** `result_ttl=3600`, because RQ keeps successful results for only 500s by default and a polling client would find them gone. `failure_ttl=86400`. `Retry(max=2, interval=[15, 45])`, because RQ does not re-run a job whose worker died, and only retries when configured to. `job_timeout=300` covers the run time including time spent waiting for a limiter slot.
 **The RQ connection is separate.** RQ stores binary job data, so its Redis connection must not use `decode_responses=True`. The API keeps its async text connection for the cache, and RQ gets its own sync connection. RQ's client is sync, so every call from the async API goes through `asyncio.to_thread`.
 **The worker is run with `rq.SimpleWorker` on macOS.** The default worker forks a child per job, and on macOS the child crashed with an Objective-C fork error shortly after starting each job (`Work-horse terminated unexpectedly`). The first retries ran into the same crash, which at least showed the retry schedule working. `--worker-class rq.SimpleWorker` runs jobs in-process and fixed it.
 **Guardrail reason is logged but not returned to the client, so it doesn’t reveal which check fired.**
@@ -666,7 +666,7 @@ The job in the burst test that finished at 37.0s sat in `started` for about 23s,
 - **The limiter is a fixed window.** A burst can straddle two windows and briefly allow up to 2x the limit. A slot is also spent even if the Gemini call then fails.
 - **Retry helps transient errors only.** It does nothing against a daily-quota 429 (retry time about 20 hours), and each retry redoes retrieval, which makes another embedding call (3 embedding calls in the retry test).
 - **`SimpleWorker` has no crash isolation or hard timeouts.** A job that crashes hard takes the worker down with it. It's a local development choice for macOS, not a production one.
-- **A hard-killed worker leaves a job in limbo** until RQ's cleanup moves it to `failed`. It was not re-run (Monday experiment).
+- **A hard-killed worker leaves a job in limbo** until RQ's cleanup moves it to `failed`. It was not re-run (observed in my RQ learning experiments, see `docs/rq-learning-notes.md`).
 - **Single worker, one run per test, one machine.** Nothing here shows behavior under concurrent load or multiple workers.
 - **`/ws` is not queued** and `/jobs` has no auth or per-client rate limit.
 - A stale answer or a guardrail rejection still returns job status `finished`, so clients must read `tier` (`"stale"`) and the answer text; status alone doesn't say the answer was degraded.
@@ -679,7 +679,7 @@ The job in the burst test that finished at 37.0s sat in `started` for about 23s,
 - A sliding-window or token-bucket limiter, and a limiter that treats a daily-quota 429 differently (skip the retries and fail fast).
 - Retry only the generation step, or cache the retrieved context, so retries don't re-embed.
 - Notify the client (webhook or SSE) instead of polling, or have the worker publish tokens to a Redis stream so a queued job can still stream.
-- Worker pools and queue-depth sizing (Friday's topic), and running the default forking worker on Linux/Docker.
+- Worker pools and queue-depth sizing, including not tying up a worker while it waits for a limiter slot, and running the default forking worker on Linux/Docker.
 - Warm the Chroma collection and imports at worker start (about 5s first-job overhead)
 
 ### Concepts covered
